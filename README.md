@@ -35,26 +35,7 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 
 In the current iteration of the model, we're using [Replogle et al., Cell, 2022 K562 Essential Perturb-seq Gene Perturbation Signatures](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures) datasets.  This dataset is derived from a patient with Chronic Myelogenous Leukemia (CML)  and, using scRNA seq measures gene expression profiles following CRISPRi genetic perturbation of essential genes.  In essence, this dataset contains gene expression measurments for 48 batches of cells where there are controls and single gene knock-outs allowing you to see how a single knockout perturbation impacts the controls.  To abstract this data into a higher level concept, we pull gene regulatory network information from [Drug Signatures Database (DSigDB)](https://academic.oup.com/bioinformatics/article/31/18/3069/241009) and map the genes to each regulatory network.  Even though our perturbSeq dataset has 8,563 genes in it, and our DSigDB dataset has 17,137 unique genes in it, after finding the union we're left with 7,356 genes that match in both.  To create a trainable dataset, we create a "score" for each network in the cell using normalized multi-hot encoding for the network and then a dot product summation.  A tiny example is as follows where we have the gene expression matrix, the gene networks, and as a result a network score per cell.  
 
-$$
-\begin{bmatrix}
-0 & .384 & 0 & .785 \\
-0 & 0 & 0 & 1.542 \\
-.234 & .183 & .421 & .248
-\end{bmatrix}_{cell \times gene}
-\cdot
-\begin{bmatrix}
-.5 & .33 & 0 & .25 & 0 \\
-0 & .33 & 0 & .25 & .5 \\
-0 & .33 & 0 & .25 & .5 \\
-.5 & 0 & 1 & .25 & 0
-\end{bmatrix}_{gene \times network}
-=
-\begin{bmatrix}
-0.39 & 0.13 & 0.79 & 0.29 & 0.19 \\
-0.77 & 0 & 1.54 & 0.39 & 0 \\
-0.24 & 0.28 & 0.25 & 0.27 & 0.30
-\end{bmatrix}_{cell \times network}
-$$
+![network_impact_math](resources/network_impact_math.png)
 
 We do this for the control and each perturbation.  We then finish our tokenization by taking the perturbed cell's product, pair it with a random control's product from the same batch (we use random since there's less controls than perturbed cells), and convert the perturbation to an integer and save the linkage to a file for training. 
 
