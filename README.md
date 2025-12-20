@@ -65,7 +65,7 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
     1. How to fix: Research how others embed perturbSeq and SC data into standard transformer based models. 
     2. Gotcha: Be sure to evaluate how to insert in more than just genes since ideally we can have any chemical modality included. 
 2. TO DO: Find more datasets/better datasets
-3. TO DO: do warmup learning on the encoders first, then train the predictor  with the encoders
+3. TO DO: do warmup learning on the encoders first, then train the predictor  with the encoders. Basically run maked prediction training on the  transformers with the data so it starts to learn what network patterns look like, then go from there. 
 
     1. "Representation Warmup." - Training our bioJEPA model from scratch is hard because we are asking it to solve two variables at once (x and y).
 
