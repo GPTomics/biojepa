@@ -41,6 +41,18 @@ We do this for the control and each perturbation.  We then finish our tokenizati
 
 #### Model Architecture
 
+>  [bioJepa_explainer.ipynb](https://github.com/GPTomics/biojepa/blob/main/notebooks/bioJepa_explainer.ipynb) is an explainer notebook 
+
+![network_impact_math](resources/biojepa_v1.png)
+
+Our current architecture has 3 models:  
+
+1. **The Student** - starts from the control cell and learns how to create a latent embedding of the cell state. 
+2. **The Predictor** - learns how to adjust the student's embedded cell state based on different perturbations to hallucinate the future diseased state in the latent space shared with the teacher. 
+3. **The Teacher** - starts from the actual perturbed cell and creates a latent space embedding for the pertured state to grade the predictors output against.  
+
+To create our latent space, we use a Pre-Norm Transformer Encoder block with Rotary Positional Embeddings (RoPE). This structure is shared by the Student and Teacher even though they learn at different rates post initiation.  The Predictor is based on a Diffusion Transformer (DiT) style block utilizing Adaptive Layer Normalization (AdaLN) and learns how to adjust the student embeddings to match the teacher embeddings based on a given perturbation. The Predictor uses `AdaLN` so that the learned Action vector is injected into every normalization layer to scale and shift the activations. This architecture effectively "swaps" the neural network's behavior based on which drug you applied istead of just scales the output. 
+
 #### Training Loops
 
 #### Testing / Validaiton 
@@ -53,6 +65,15 @@ We do this for the control and each perturbation.  We then finish our tokenizati
     1. How to fix: Research how others embed perturbSeq and SC data into standard transformer based models. 
     2. Gotcha: Be sure to evaluate how to insert in more than just genes since ideally we can have any chemical modality included. 
 2. TO DO: Find more datasets/better datasets
+3. TO DO: do warmup learning on the encoders first, then train the predictor  with the encoders
+
+    1. "Representation Warmup." - Training our bioJEPA model from scratch is hard because we are asking it to solve two variables at once (x and y).
+
+        1. **I don't know what a cell is** (Encoder is random).
+        2. **I don't know what a drug does** (Predictor is random).
+
+        If you start with random encoders, the Predictor often collapses to a trivial solution (predicting the mean) before the Encoder learns anything useful.
+
 
 
 
