@@ -63,19 +63,18 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 
 ### Improvements To Add
 
-1. TO DO: Switch the current data prep to NOT collapse down the networks to a single value per example and instead maintain the gene/molecule level expression information. With this we also have to tweak the model architecture to take in the updated embeddings. 
-    1. How to fix: Research how others embed perturbSeq and SC data into standard transformer based models. 
-    2. Gotcha: Be sure to evaluate how to insert in more than just genes since ideally we can have any chemical modality included. 
-2. TO DO: Find more datasets/better datasets
-3. TO DO: do warmup learning on the encoders first, then train the predictor  with the encoders. Basically run maked prediction training on the  transformers with the data so it starts to learn what network patterns look like, then go from there. 
+1. TO DO: add validation harness to understand how well we're performing and compare changing architectures. 
+
+2. TO DO: do pretraining on our action-free JEPA (joint embedding predictive architecture), our teacher/student models, before running the self-supervised learning for the action predictor.
 
     1. "Representation Warmup." - Training our bioJEPA model from scratch is hard because we are asking it to solve two variables at once (x and y).
-
         1. **I don't know what a cell is** (Encoder is random).
         2. **I don't know what a drug does** (Predictor is random).
+    2. If you start with random encoders, the Predictor often collapses to a trivial solution (predicting the mean) before the Encoder learns anything useful.
 
-        If you start with random encoders, the Predictor often collapses to a trivial solution (predicting the mean) before the Encoder learns anything useful.
+3. TO DO: Find more datasets/better datasets
 
+    
 
 
 
