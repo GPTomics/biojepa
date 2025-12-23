@@ -31,7 +31,7 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 
 #### Data Prep
 
-> [data_prep_explainer_genebased](https://github.com/GPTomics/biojepa/blob/main/notebooks/data_prep_explainer_genebased) is an explainer notebook 
+> [data_prep_explainer](https://github.com/GPTomics/biojepa/blob/main/notebooks/data_prep_explainer) is an explainer notebook 
 
 In the current iteration of the model, we're using [Replogle et al., Cell, 2022 K562 Essential Perturb-seq Gene Perturbation Signatures](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures) datasets.  This dataset is derived from a patient with Chronic Myelogenous Leukemia (CML)  and, using scRNA seq measures gene expression profiles following CRISPRi genetic perturbation of essential genes.  In essence, this dataset contains gene expression measurments for 48 batches of cells where there are controls and single gene knock-outs allowing you to see how a single knockout perturbation impacts the controls.   
 
