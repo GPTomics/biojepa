@@ -42,3 +42,4 @@ PROCESSED_DATA/*
 
 # Jupyter Notebook
 .ipynb_checkpoints
+__pycache__

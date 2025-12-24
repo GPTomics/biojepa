@@ -74,6 +74,10 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 
 3. TO DO: Find more datasets/better datasets
 
+4. TO DO: see if a random initialized network performs better
+
+5. TO DO: Improve perturbation so that it's more flexible.  Explore using a combination of `[type, name, sequence]` encoding where the sequence can be the amino acid, neuclaic acid, or SMILES so that it's more flexible to brand new pertrubations. 
+
     
 
 
