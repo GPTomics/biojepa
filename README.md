@@ -64,15 +64,21 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 ### Improvements To Add
 
 1. TO DO: add validation harness to understand how well we're performing and compare changing architectures. 
-
 2. TO DO: do pretraining on our action-free JEPA (joint embedding predictive architecture), our teacher/student models, before running the self-supervised learning for the action predictor.
-
     1. "Representation Warmup." - Training our bioJEPA model from scratch is hard because we are asking it to solve two variables at once (x and y).
         1. **I don't know what a cell is** (Encoder is random).
         2. **I don't know what a drug does** (Predictor is random).
     2. If you start with random encoders, the Predictor often collapses to a trivial solution (predicting the mean) before the Encoder learns anything useful.
 
 3. TO DO: Find more datasets/better datasets
+
+| **Dataset**              | **Type**       | **Cell Lines**   | **Value Add**                                                |
+| ------------------------ | -------------- | ---------------- | ------------------------------------------------------------ |
+| **Replogle K562**        | CRISPRi        | K562 (Leukemia)  | **Baseline:** Deep coverage of cancer biology.               |
+| **Replogle RPE1**        | CRISPRi        | RPE1 (Retinal)   | **Generalization:** Non-cancer, normal karyotype biology.    |
+| **Norman 2019**          | CRISPRa (Dual) | K562             | **Physics:** Teaches non-linear gene interactions ($A+B \neq A+B$). |
+| **sci-Plex (Srivatsan)** | Drugs          | A549, MCF7, K562 | **Chemistry:** Maps drugs to gene states; massive scale (650k cells). |
+| **Adamson 2016**         | CRISPRi        | K562             | **Stress:** High-resolution view of toxicity pathways.       |
 
 4. TO DO: see if a random initialized network performs better
 
