@@ -63,14 +63,21 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 
 ### Improvements To Add
 
-1. TO DO: add validation harness to understand how well we're performing and compare changing architectures. 
-2. TO DO: do pretraining on our action-free JEPA (joint embedding predictive architecture), our teacher/student models, before running the self-supervised learning for the action predictor.
+1. TO DO: validate what "random" is on our evaluation sets.  
+    1. ways to do it: 
+        1. randomly shuffle labels and see how it performs, 
+        2. run the untrained model. 
+            1. Trained BioJEPA + untrained decoder: 0.0037 
+            2. Untrained BioJEPA + untrained decoder: 0027
+
+2. TO DO: add validation harness to understand how well we're performing and compare changing architectures. 
+3. TO DO: do pretraining on our action-free JEPA (joint embedding predictive architecture), our teacher/student models, before running the self-supervised learning for the action predictor.
     1. "Representation Warmup." - Training our bioJEPA model from scratch is hard because we are asking it to solve two variables at once (x and y).
         1. **I don't know what a cell is** (Encoder is random).
         2. **I don't know what a drug does** (Predictor is random).
     2. If you start with random encoders, the Predictor often collapses to a trivial solution (predicting the mean) before the Encoder learns anything useful.
 
-3. TO DO: Find more datasets/better datasets
+4. TO DO: Find more datasets/better datasets
 
 | **Dataset**              | **Type**       | **Cell Lines**   | **Value Add**                                                |
 | ------------------------ | -------------- | ---------------- | ------------------------------------------------------------ |
@@ -82,11 +89,21 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 
 4. TO DO: see if a random initialized network performs better
 
-5. TO DO: Improve perturbation so that it's more flexible.  Explore using a combination of `[type, name, sequence]` encoding where the sequence can be the amino acid, neuclaic acid, or SMILES so that it's more flexible to brand new pertrubations. 
+5. TO DO: Improve perturbation so that it's more flexible.  Explore using a combination of `[entity embedding, mode embedding]` encoding where the sequence can be the amino acid, neuclaic acid, or SMILES so that it's more flexible to brand new pertrubations. 
 
-    
+    1. **EntityEmbedding:** A vectorization of the gene or drug (e.g. from ESM-2 (Gene) or ChemBERTa (Drug).)
+        1. Longer term use a hybrid approach where you can have both protein encoding of genes along with nucleic acid so you can handle variant perturbations. 
 
+    2. **ModeEmbedding:** A learnable vector representing the *type* of perturbation. This is based on a fixed vocab  (e.g. MODE_DRUG_TREATMENT (for sci-Plex, Srivatsan), MODE_CRISPR_KO (for Replogle, Adamson), MODE_CRISPR_ACT (Activation/Overexpression for Norman), MODE_CONTROL (Doing nothing))
 
+     
+
+## Current Performance
+
+| **Version** | BioJEPA Data                       | BioJEPA Training Config                                      | Decoder Data | Decoder Training Config | Performance                   |
+| - | - | - | - | - | - |
+| 1.0         | [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />BATCH_SIZE = 256<br />10 epochs<br />10000 genes/file | mask_matrix=[DSigDB](https://academic.oup.com/bioinformatics/article/31/18/3069/241009) <br />num_genes=4096,<br/>num_pathways=1024,<br/>embed_dim=128,<br/>heads=8<br />LR = 1e-3 |Gears 'replogle_k562_essential'<br />BATCH_SIZE = 256<br />10 epochs<br />20000 genes/file              | embed_dim=128,<br/>num_pathways=1024,<br/>num_genes= 4096<br />LR=1e-2<br /> | **Test**<br />Global MSE: 0.7576<br />Top-20 Pearson R: 0.6751<br /><br />*there may be data leakage* |
+|             |                                                |                                                |                                                |                                                |                                                |
 
 ## Other's Approaches
 
