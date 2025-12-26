@@ -69,15 +69,12 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
         2. run the untrained model. 
             1. Trained BioJEPA + untrained decoder: 0.0037 
             2. Untrained BioJEPA + untrained decoder: 0027
-
-2. TO DO: add validation harness to understand how well we're performing and compare changing architectures. 
-3. TO DO: do pretraining on our action-free JEPA (joint embedding predictive architecture), our teacher/student models, before running the self-supervised learning for the action predictor.
+2. TO DO: do pretraining on our action-free JEPA (joint embedding predictive architecture), our teacher/student models, before running the self-supervised learning for the action predictor.
     1. "Representation Warmup." - Training our bioJEPA model from scratch is hard because we are asking it to solve two variables at once (x and y).
         1. **I don't know what a cell is** (Encoder is random).
         2. **I don't know what a drug does** (Predictor is random).
     2. If you start with random encoders, the Predictor often collapses to a trivial solution (predicting the mean) before the Encoder learns anything useful.
-
-4. TO DO: Find more datasets/better datasets
+3. TO DO: Find more datasets/better datasets
 
 | **Dataset**              | **Type**       | **Cell Lines**   | **Value Add**                                                |
 | ------------------------ | -------------- | ---------------- | ------------------------------------------------------------ |
@@ -88,6 +85,8 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 | **Adamson 2016**         | CRISPRi        | K562             | **Stress:** High-resolution view of toxicity pathways.       |
 
 4. TO DO: see if a random initialized network performs better
+
+    1. TO DO: try to do it without network projection
 
 5. TO DO: Improve perturbation so that it's more flexible.  Explore using a combination of `[entity embedding, mode embedding]` encoding where the sequence can be the amino acid, neuclaic acid, or SMILES so that it's more flexible to brand new pertrubations. 
 
