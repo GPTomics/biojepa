@@ -84,7 +84,7 @@ class CellStateBlock(nn.Module):
 
 @dataclass
 class CellStateEncoderConfig:
-    num_genes: int = 4096
+    num_genes: int = 8192
     num_pathways: int = 1024 
     n_layer: int = 24 
     heads: int = 12
@@ -262,21 +262,54 @@ class ACPredictor(nn.Module):
         predictions = sequence[:, N:, :] 
         return predictions
 
+class MaskedPredictor(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        
+        # Shallow transformer for reconstruction (typically fewer layers than encoder)
+        self.blocks = nn.ModuleList([
+            CellStateBlock(config) for _ in range(config.n_pre_layer) 
+        ])
+        self.norm = nn.LayerNorm(config.embed_dim)
+        self.pred_head = nn.Linear(config.embed_dim, config.embed_dim)
+
+        self.apply(self._init_weights)
+    def _init_weights(self, module):
+        ## fan_in, _ = nn.init._calculate_fan_in_and_fan_out(w)
+        ##std = math.sqrt(2.0 / fan_in)
+        if isinstance(module, nn.Linear) or isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None: 
+                torch.nn.init.zeros_(module.bias)
+            
+    def forward(self, x):
+        for block in self.blocks:
+            x = block(x)
+        x = self.norm(x)
+        x = self.pred_head(x)
+        return x
+
 @dataclass
 class BioJepaConfig:
     mask_matrix: np.ndarray
-    num_genes: int = 4096
+    num_genes: int = 8192
     num_pathways: int = 1024
-    n_layer: int = 6 
+    n_layer: int = 6
     heads: int = 4
     embed_dim: int = 256
     action_embed_dim: int=256 
     mlp_ratio: float = 4.0
     max_perturb: int= 2058 ## eventually try to get to a 2**N power
+
+    # pretraining
+    mask_ratio: float = 0.6
+    n_pre_layer: int = 3
     
 class BioJepa(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
 
         enc_conf = CellStateEncoderConfig(
             num_genes=config.num_genes,
@@ -295,7 +328,7 @@ class BioJepa(nn.Module):
         for p in self.teacher.parameters():
             p.requires_grad = False
 
-
+        ## Action Predictor
         pred_conf = ACPredictorConfig(
             num_pathways=config.num_pathways,
             n_layer=config.n_layer,
@@ -306,6 +339,13 @@ class BioJepa(nn.Module):
             max_perturb=config.max_perturb
         )
         self.predictor = ACPredictor(pred_conf)
+
+        ## Pretraining 
+        self.mask_token = nn.Parameter(torch.randn(1, 1, config.embed_dim) * 0.02)
+
+        mask_pred_conf = copy.deepcopy(enc_conf)
+        mask_pred_conf.n_pre_layer = config.n_pre_layer
+        self.masked_predictor = MaskedPredictor(mask_pred_conf)
 
     def forward(self, x_control, total_control, x_case, total_case, action_id):
         # 1. Teacher
@@ -323,8 +363,53 @@ class BioJepa(nn.Module):
         
         return loss
 
+    def forward_pretrain(self, x, x_total_ct):
+        batch = x.shape[0]
+        num_pathways = self.config.num_pathways
+        
+        # 1. Teacher Target (Full view)
+        with torch.no_grad():
+            target_latents = self.teacher(x, x_total_ct) # [B, N, D]
+
+        # 2. Manual Student Overwrite for masking
+        x_genes = x.unsqueeze(-1) 
+        gene_repr = x_genes * self.student.gene_embeddings.unsqueeze(0)
+        x_pathway = self.student.pathway_weights @ gene_repr # [B, N, D]
+        
+        x_total_ct = x_total_ct.unsqueeze(-1)
+        x_total_ct = self.student.total_count_proj(x_total_ct)
+        x_total_ct = x_total_ct.unsqueeze(1)
+        x = x_pathway + x_total_ct
+        
+        # 3. Create Mask for learning 1 = Masked, 0 = Visible
+        mask_noise = torch.rand(batch, num_pathways, device=x.device)
+        mask_indices = mask_noise < self.config.mask_ratio
+        
+        # Replace masked tokens with self.mask_token
+        # Expand mask token to [B, N, D] then select positions
+        mask_token_expand = self.mask_token.expand(batch, num_pathways, -1)
+        x_masked = x.clone()
+        x_masked[mask_indices] = mask_token_expand[mask_indices]
+
+        # 4. Pass through Student Transformer Blocks
+        for block in self.student.blocks:
+            x_masked = block(x_masked)
+        z_student = self.student.ln_f(x_masked)
+        
+        # 5. Masked Predictor tries to reconstruct the teacher latent at the masked positions
+        z_pred = self.masked_predictor(z_student)
+        
+        # 6. Loss calculation (Compute loss ONLY on masked patches)
+        pred_masked = z_pred[mask_indices]
+        target_masked = target_latents[mask_indices]
+        
+        loss = F.l1_loss(pred_masked, target_masked)
+        
+        return loss 
+
     @torch.no_grad()
     def update_teacher(self, m=0.996):
         for param_s, param_t in zip(self.student.parameters(), self.teacher.parameters()):
             param_t.data.mul_(m).add_((1 - m) * param_s.data)
+            
             
