@@ -25,9 +25,20 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 
 **New Mechanism Discovery** If we update our inputs to also include the molecular components of regulatroy networks and cell pathways (e.g. genes/proteins/enzymes), then the model will learn the different weights of the networks/pathways from the data. During training, if the model realizes it cannot accurately predict cell states without using a specific, previously expected to be useless, gene or enzyme, it will update the mask to include it. This allows us to mathematically prove that a previously uncharacterized component is functionally essential to a specific biological process.  A tweak of this could also allow for the dynamic dimension to be the different pathways allowing for the learning to be focused on the pathways.  
 
+## Current Performance
+
+| **Version** | Performance            | BioJEPA Data                       | BioJEPA Training Config                                      | Decoder Data | Decoder Training Config |
+| - | - | - | - | - | - |
+| 0.2 | TBD |  |  |  |  |
+| 0.1      | **Test**<br />Global MSE: 0.7576<br />Top-20 Pearson R: 0.6751<br /><br />*inflated due to data leakage of perturbations* | [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />BATCH_SIZE = 256<br />10 epochs<br />10000 genes/file | mask_matrix=[DSigDB](https://academic.oup.com/bioinformatics/article/31/18/3069/241009) <br />num_genes=4096,<br/>num_pathways=1024,<br/>embed_dim=128,<br/>heads=8<br />LR = 1e-3 |Gears 'replogle_k562_essential'<br />BATCH_SIZE = 256<br />10 epochs<br />20000 genes/file              | embed_dim=128,<br/>num_pathways=1024,<br/>num_genes= 4096<br />LR=1e-2<br /> |
+|             |                                                |                                                |                                                |                                                |                                                |
 
 
-## Current Architecture
+## V0.2 Architecture
+
+WIP 
+
+## V0.1 Architecture
 
 #### Data Prep
 
@@ -55,9 +66,6 @@ Our current architecture has 3 models:
 
 To create our latent space, we use a Pre-Norm Transformer Encoder block with Rotary Positional Embeddings (RoPE). This structure is shared by the Student and Teacher even though they learn at different rates post initiation.  The Predictor is based on a Diffusion Transformer (DiT) style block utilizing Adaptive Layer Normalization (AdaLN) and learns how to adjust the student embeddings to match the teacher embeddings based on a given perturbation. The Predictor uses `AdaLN` so that the learned Action vector is injected into every normalization layer to scale and shift the activations. This architecture effectively "swaps" the neural network's behavior based on which drug you applied istead of just scales the output. 
 
-#### Training Loops
-
-#### Testing / Validaiton 
 
 
 
@@ -95,14 +103,6 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 
     2. **ModeEmbedding:** A learnable vector representing the *type* of perturbation. This is based on a fixed vocab  (e.g. MODE_DRUG_TREATMENT (for sci-Plex, Srivatsan), MODE_CRISPR_KO (for Replogle, Adamson), MODE_CRISPR_ACT (Activation/Overexpression for Norman), MODE_CONTROL (Doing nothing))
 
-     
-
-## Current Performance
-
-| **Version** | Performance            | BioJEPA Data                       | BioJEPA Training Config                                      | Decoder Data | Decoder Training Config |
-| - | - | - | - | - | - |
-| 0.1      | **Test**<br />Global MSE: 0.7576<br />Top-20 Pearson R: 0.6751<br /><br />*there may be data leakage* | [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />BATCH_SIZE = 256<br />10 epochs<br />10000 genes/file | mask_matrix=[DSigDB](https://academic.oup.com/bioinformatics/article/31/18/3069/241009) <br />num_genes=4096,<br/>num_pathways=1024,<br/>embed_dim=128,<br/>heads=8<br />LR = 1e-3 |Gears 'replogle_k562_essential'<br />BATCH_SIZE = 256<br />10 epochs<br />20000 genes/file              | embed_dim=128,<br/>num_pathways=1024,<br/>num_genes= 4096<br />LR=1e-2<br /> |
-|             |                                                |                                                |                                                |                                                |                                                |
 
 ## Other's Approaches
 

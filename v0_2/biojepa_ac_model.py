@@ -14,6 +14,17 @@ import matplotlib.pyplot as plt
 import random
 from dataclasses import dataclass
 
+torch.manual_seed(1337)
+random.seed(1337)
+
+def get_device():
+    device = 'cpu'
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337)
+        device = 'cuda'
+    print(f'using {device}')
+    return device
+
 class BioMultiHeadAttention(nn.Module):
     # mirrors nn.MultiheadAttention(dim, heads, batch_first=True) 
     def __init__(self, config):
@@ -211,14 +222,23 @@ class ACPredictorConfig:
     action_embed_dim: int = 256 
     mlp_ratio: float = 4.0
     max_perturb: int = 2058 ## eventually try to get to a 2**N power
+    pert_embd_dim: int = 320 # based on action embeddings
 
 class ACPredictor(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, pert_embd):
         super().__init__()
         self.config = config
         
         # Action Embedding (Discrete ID -> Vector)
-        self.action_embed = nn.Embedding(config.max_perturb, config.action_embed_dim)
+        self.register_buffer('pert_bank', torch.tensor(pert_embd, dtype=torch.float32))
+
+        # Perturbation Embedding
+        self.adapter = nn.Sequential(
+            nn.Linear(config.pert_embd_dim, config.action_embed_dim),
+            nn.LayerNorm(config.action_embed_dim),
+            nn.GELU(),
+            nn.Linear(config.action_embed_dim, config.action_embed_dim)
+        )
         
         # Learnable Queries ("Mask Tokens") for the future state
         # One query vector per pathway position
@@ -242,9 +262,12 @@ class ACPredictor(nn.Module):
         action_ids: [Batch] (Ints)
         """
         B, N, D = context_latents.shape
-        
-        # 1. Embed Action
-        action_emb = self.action_embed(action_ids) # [B, action_embed_dim]
+
+        # Get Perturbations Embeddings
+        raw_pert = self.pert_bank[action_ids]
+
+        # Project to Embedding Space
+        action_emb = self.adapter(raw_pert)
         
         # 2. Construct Input: [Context, Mask_Queries]
         # We concatenate the learned queries to the context. 
@@ -260,6 +283,7 @@ class ACPredictor(nn.Module):
         
         # 4. Return only the predicted part (The Queries corresponding to N..2N)
         predictions = sequence[:, N:, :] 
+        
         return predictions
 
 class MaskedPredictor(nn.Module):
@@ -307,7 +331,7 @@ class BioJepaConfig:
     n_pre_layer: int = 3
     
 class BioJepa(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, pert_embd):
         super().__init__()
         self.config = config
 
@@ -336,9 +360,10 @@ class BioJepa(nn.Module):
             embed_dim=config.embed_dim,
             action_embed_dim=config.action_embed_dim,
             mlp_ratio=config.mlp_ratio,
-            max_perturb=config.max_perturb
+            max_perturb=config.max_perturb,
+            pert_embd_dim=pert_embd.shape[1] # Auto-detect (320)
         )
-        self.predictor = ACPredictor(pred_conf)
+        self.predictor = ACPredictor(pred_conf, pert_embd)
 
         ## Pretraining 
         self.mask_token = nn.Parameter(torch.randn(1, 1, config.embed_dim) * 0.02)
@@ -411,5 +436,4 @@ class BioJepa(nn.Module):
     def update_teacher(self, m=0.996):
         for param_s, param_t in zip(self.student.parameters(), self.teacher.parameters()):
             param_t.data.mul_(m).add_((1 - m) * param_s.data)
-            
             
