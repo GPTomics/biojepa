@@ -32,12 +32,23 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 | 0.2 | Global MSE: 0.7904 Top-20<br /> Pearson R: 0.5544 | Student/Teacher: 5,161,776<br/>ACPredictor: 178,912 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:10 Epochs<br />Tr:10 Epochs | Pretraining+training<br />n_embd = 8<br/>n_pathways = 1024<br/>n_heads = 2<br/>n_layers = 2 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />10 epochs<br /> | n_embd = 8<br/>n_pathways = 1024 |
 | 0.1      | Global MSE: 0.7576<br />Top-20 Pearson R: 0.6751<br /><br />*inflated due to data leakage* |  | [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />10 epochs<br /> | mask_matrix=[DSigDB](https://academic.oup.com/bioinformatics/article/31/18/3069/241009) <br />num_genes=4096,<br/>num_pathways=1024,<br/>embed_dim=128,<br/>heads=8<br /> |Gears 'replogle_k562_essential'<br />10 epochs<br />              | embed_dim=128,<br/>num_pathways=1024,<br/>num_genes= 4096 |
 
+## v0.3 Architecture
 
-## V0.2 Architecture
+The main update here were
 
-WIP 
+1. Expanded our dataset to include  other CRISPRi datasets including Replogle K562 Essential, Replogle K562 genome-wide, Replogle RPE1 essential, and Adamson - CRISPRi.  We're sticking with CRISPRi in this dataset but in the future version will add handling for different types (TBD how we do that).
+2. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set. 
+3. Removed our initialization of the gene network  to be based on DSigDB.  We're postulating that over the training this is biasing our model and we'll see the model learn its own networks through trianing. 
 
-## V0.1 Architecture
+## v0.2 Architecture
+
+The main update here were 
+
+1. We improved our data handling to align with how GEARS benchmarking is done so we held out any cell with a perturbation that matched the training split on our dataset. This means that when we ran our benchmark the perturbation were completely unseen by our model.   
+2. Pre-train the action-free model. This means we'll run masked training on the student/teacher model.  After that we freeze the student/teacher and then train the action predictor.  
+3. We updated how perturbations were handled.  In V0.1 we simply gave each perturbation an integer.  For V0.2 we converted each perturbation to the amino acid sequence of the protein and then used ESM2 (esm2_t6_8M_UR50D) to create an embedding for each protein.
+
+## v0.1 Architecture
 
 #### Data Prep
 
