@@ -27,10 +27,10 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 
 ## Current Performance
 
-| **Version** | Performance            | Parameters             | BioJEPA Data                       | BioJEPA Training Config                                      | Decoder Data | Decoder Training Config |
-| - | - | - | - | - | - | - |
-| 0.2 | Global MSE: 0.7904 Top-20<br /> Pearson R: 0.5544 | Student/Teacher: 5,161,776<br/>ACPredictor: 178,912 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:10 Epochs<br />Tr:10 Epochs | Pretraining+training<br />n_embd = 8<br/>n_pathways = 1024<br/>n_heads = 2<br/>n_layers = 2 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />10 epochs<br /> | n_embd = 8<br/>n_pathways = 1024 |
-| 0.1      | Global MSE: 0.7576<br />Top-20 Pearson R: 0.6751<br /><br />*inflated due to data leakage* |  | [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />10 epochs<br /> | mask_matrix=[DSigDB](https://academic.oup.com/bioinformatics/article/31/18/3069/241009) <br />num_genes=4096,<br/>num_pathways=1024,<br/>embed_dim=128,<br/>heads=8<br /> |Gears 'replogle_k562_essential'<br />10 epochs<br />              | embed_dim=128,<br/>num_pathways=1024,<br/>num_genes= 4096 |
+|**Version**|Performance|Parameters| BioJEPA Data    |BioJEPA Training Config|Decoder Data|
+| - | - | - | - | - | - |
+| 0.2 | Global MSE: 0.7896 <br />Top-20 Pearson R: 0.6046 | Student/Teacher: 11,139,584<br />ACpredictor: 6,853,632 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Epochs<br />Tr:20 Epochs | Pretraining+training<br />n_embd = 256<br/>n_pathways = 1024<br/>n_heads = 4<br/>n_layers = 6 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />Tr: 20 epochs<br /> |
+| 0.1      | removed due to data leakage                       |                                                         |                                                              |                                                              |                                                              |
 
 ## v0.3 Architecture
 
