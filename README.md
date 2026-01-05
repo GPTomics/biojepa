@@ -32,7 +32,13 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 | 0.2 | Global MSE: 0.7896 <br />Top-20 Pearson R: 0.6046 | Student/Teacher: 11,139,584<br />ACpredictor: 6,853,632 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Epochs<br />Tr:20 Epochs | Pretraining+training<br />n_embd = 256<br/>n_pathways = 1024<br/>n_heads = 4<br/>n_layers = 6 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />Tr: 20 epochs<br /> |
 | 0.1      | removed due to data leakage                       |                                                         |                                                              |                                                              |                                                              |
 
-## v0.3 Architecture
+## To DO Architecture
+
+1. Figure out how to handle non protein based perturbations (pseudogenes, lncRNA)
+2. Figure out how to handle beyond just CRISPRi
+3. Remove the network collapse and rely on linear attention to improve tokenization flexibility 
+
+## v0.3 Architecture (WIP)
 
 The main update here were
 
