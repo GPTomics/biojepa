@@ -37,14 +37,25 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 1. Figure out how to handle non protein based perturbations (pseudogenes, lncRNA)
 2. Figure out how to handle beyond just CRISPRi
 3. Remove the network collapse and rely on linear attention to improve tokenization flexibility 
+4. Expanded our dataset to include  other CRISPRi datasets including Replogle K562 Essential, Replogle K562 genome-wide, Replogle RPE1 essential, and Adamson - CRISPRi.  We're sticking with CRISPRi in this dataset but in the future version will add handling for different types (TBD how we do that).
+5. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set. 
 
 ## v0.3 Architecture (WIP)
 
-The main update here were
-
-1. Expanded our dataset to include  other CRISPRi datasets including Replogle K562 Essential, Replogle K562 genome-wide, Replogle RPE1 essential, and Adamson - CRISPRi.  We're sticking with CRISPRi in this dataset but in the future version will add handling for different types (TBD how we do that).
-2. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set. 
-3. Removed our initialization of the gene network  to be based on DSigDB.  We're postulating that over the training this is biasing our model and we'll see the model learn its own networks through trianing. 
+1. **Replaced Attention Mechanism:** Switched to linear attention (using kernelized attention with ELU + 1 feature maps).
+    1. Benefit: Reduces complexity from $O(N^2)$ to $O(N)$ 
+2. **Removed Explicit Pathway Layer:** Removed the fixed pathway weights. The encoder now processes gene embeddings directly rather than projecting them into defined biological pathways.
+    1. Benefit: Removes human bias and rigid sparsity constraints, allowing the model to learn latent gene-gene relationships and pathway definitions purely from data.
+3. **New Loss Functions:** Implemented Variance-Invariance-Covariance Regularization (VICReg) alongside reconstruction. Pretraining uses L1 + VICReg; Prediction uses Gaussian NLL + VICReg.
+    1. Benefit: Prevents "posterior collapse" (where all embeddings look the same) and forces the latent dimensions to be statistically independent and information-rich.
+4. **Probabilistic Predictor Output:** The ACPredictor now generates a distribution of possible outcomes (mean and variance) rather than a single fixed number.
+    1. Benefit: Allows the model to capture biological noise and express uncertainty in its predictions, preventing it from hallucinating precision where none exists.
+5. **Overhauled Predictor Conditioning:** Removed Adaptive Layer Norm (AdaLN) in the ACPredictor and now injects action information via Cross-Attention.
+    - Benefit: Provides a more expressive mechanism for the perturbation to influence the cell state updates directly in the residual stream, rather than just scaling normalization statistics.
+6. **Query Mechanism Update:** The ACpredictor now generates queries based on target indices via an embedding layer, rather than concatenating a fixed sequence of learnable mask tokens.
+    - Benefit: Explicitly signals to the model which specific gene targets it needs to reconstruct, improving prediction accuracy over implicit positional learning.
+7. **Masking Strategy:** Changed masking strategy to zero-out masking.
+    - Benefit: Simplifies the input pipeline and acts as a stronger regularizer, forcing the model to rely entirely on context rather than a learned "missing" signal.
 
 ## v0.2 Architecture
 
