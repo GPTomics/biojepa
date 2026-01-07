@@ -51,11 +51,9 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 4. **Probabilistic Predictor Output:** The ACPredictor now generates a distribution of possible outcomes (mean and variance) rather than a single fixed number.
     1. Benefit: Allows the model to capture biological noise and express uncertainty in its predictions, preventing it from hallucinating precision where none exists.
 5. **Overhauled Predictor Conditioning:** Removed Adaptive Layer Norm (AdaLN) in the ACPredictor and now injects action information via Cross-Attention.
-    - Benefit: Provides a more expressive mechanism for the perturbation to influence the cell state updates directly in the residual stream, rather than just scaling normalization statistics.
+    1. Benefit: Provides a more expressive mechanism for the perturbation to influence the cell state updates directly in the residual stream, rather than just scaling normalization statistics.
 6. **Query Mechanism Update:** The ACpredictor now generates queries based on target indices via an embedding layer, rather than concatenating a fixed sequence of learnable mask tokens.
-    - Benefit: Explicitly signals to the model which specific gene targets it needs to reconstruct, improving prediction accuracy over implicit positional learning.
-7. **Masking Strategy:** Changed masking strategy to zero-out masking.
-    - Benefit: Simplifies the input pipeline and acts as a stronger regularizer, forcing the model to rely entirely on context rather than a learned "missing" signal.
+    1. Benefit: Explicitly signals to the model which specific gene targets it needs to reconstruct, improving prediction accuracy over implicit positional learning.
 
 ## v0.2 Architecture
 
@@ -116,14 +114,12 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 | **Replogle K562**        | CRISPRi        | K562 (Leukemia)  | **Baseline:** Deep coverage of cancer biology.               |
 | **Replogle RPE1**        | CRISPRi        | RPE1 (Retinal)   | **Generalization:** Non-cancer, normal karyotype biology.    |
 | **Norman 2019**          | CRISPRa (Dual) | K562             | **Physics:** Teaches non-linear gene interactions ($A+B \neq A+B$). |
-| **sci-Plex (Srivatsan)** | Drugs          | A549, MCF7, K562 | **Chemistry:** Maps drugs to gene states; massive scale (650k cells). |
+| **sci-Plex (Srivatsan)** | Chemical       | A549, MCF7, K562 | **Chemistry:** Maps drugs to gene states; massive scale (650k cells). |
 | **Adamson 2016**         | CRISPRi        | K562             | **Stress:** High-resolution view of toxicity pathways.       |
+| **Tahoe**                |                |                  |                                                              |
+| **McFaline-Figueroa**    |                |                  |                                                              |
 
-4. TO DO: see if a random initialized network performs better
-
-    1. TO DO: try to do it without network projection
-
-5. TO DO: Improve perturbation so that it's more flexible.  Explore using a combination of `[entity embedding, mode embedding]` encoding where the sequence can be the amino acid, neuclaic acid, or SMILES so that it's more flexible to brand new pertrubations. 
+4. TO DO: Improve perturbation so that it's more flexible.  Explore using a combination of `[entity embedding, mode embedding]` encoding where the sequence can be the amino acid, neuclaic acid, or SMILES so that it's more flexible to brand new pertrubations. 
 
     1. **EntityEmbedding:** A vectorization of the gene or drug (e.g. from ESM-2 (Gene) or ChemBERTa (Drug).)
         1. Longer term use a hybrid approach where you can have both protein encoding of genes along with nucleic acid so you can handle variant perturbations. 
