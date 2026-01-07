@@ -29,6 +29,7 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 
 |**Version**|Performance|Parameters| BioJEPA Data    |BioJEPA Training Config|Decoder Data|
 | - | - | - | - | - | - |
+|0.3|Global MSE: 0.6059 <br />Top-20 Pearson R: 0.9341<br />* high pearsons related to using EMS-2 embeddings so perturbations have high similarity||  |||
 | 0.2 | Global MSE: 0.7896 <br />Top-20 Pearson R: 0.6046 | Student/Teacher: 11,139,584<br />ACpredictor: 6,853,632 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Epochs<br />Tr:20 Epochs | Pretraining+training<br />n_embd = 256<br/>n_pathways = 1024<br/>n_heads = 4<br/>n_layers = 6 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />Tr: 20 epochs<br /> |
 | 0.1      | removed due to data leakage                       |                                                         |                                                              |                                                              |                                                              |
 
@@ -102,11 +103,6 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
         2. run the untrained model. 
             1. Trained BioJEPA + untrained decoder: 0.0037 
             2. Untrained BioJEPA + untrained decoder: 0027
-2. TO DO: do pretraining on our action-free JEPA (joint embedding predictive architecture), our teacher/student models, before running the self-supervised learning for the action predictor.
-    1. "Representation Warmup." - Training our bioJEPA model from scratch is hard because we are asking it to solve two variables at once (x and y).
-        1. **I don't know what a cell is** (Encoder is random).
-        2. **I don't know what a drug does** (Predictor is random).
-    2. If you start with random encoders, the Predictor often collapses to a trivial solution (predicting the mean) before the Encoder learns anything useful.
 3. TO DO: Find more datasets/better datasets
 
 | **Dataset**              | **Type**       | **Cell Lines**   | **Value Add**                                                |
@@ -125,6 +121,9 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
         1. Longer term use a hybrid approach where you can have both protein encoding of genes along with nucleic acid so you can handle variant perturbations. 
 
     2. **ModeEmbedding:** A learnable vector representing the *type* of perturbation. This is based on a fixed vocab  (e.g. MODE_DRUG_TREATMENT (for sci-Plex, Srivatsan), MODE_CRISPR_KO (for Replogle, Adamson), MODE_CRISPR_ACT (Activation/Overexpression for Norman), MODE_CONTROL (Doing nothing))
+
+5. TO DO: Add other types of valildation to see how well this model generalizes
+    1. Cell type prediction
 
 
 ## Other's Approaches
