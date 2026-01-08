@@ -27,11 +27,11 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 
 ## Current Performance
 
-|**V**|Performance|Parameters|Data|Training Config|
+|V|Performance|Params|Data|Training Config|
 | - | - | - | - | - |
-|0.3*|Global MSE: 0.5153 <br /> Pearson R (Top 20): 0.9209 <br />$R^2$ (All): $\bar{x}$:0.9018 $Med$:0.9103 <br/>$R^2$ (Top 50): $\bar{x}$:0.0602 $Med$:0.2552<br />Pred Shift Mag: $\bar{x}$:0.5362|Student/Teacher: 6,019,840 <br />ACpredictor: 7,881,216| Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Ep<br />Tr:20 Ep<br />Dec: 20 Ep |<u>PT+TR</u><br/>embd = 256<br/>heads = 4<br/>layers = 6|
-| 0.2 | Global MSE: 0.7896 <br /> Pearson R (Top 20): 0.6046 <br />$R^2$ (All): $\bar{x}$: 0.9419 $Med$:0.9558 <br />$R^2$ (Top 50): $\bar{x}$: -0.0270 $Med$:0.2686<br />Pred Shift Mag: $\bar{x}$:0.3008 | Student/Teacher: 11,139,584<br />ACpredictor: 6,853,632 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Ep<br />Tr:20 Ep<br />Dec: 20 Ep | <u>PT+TR</u><br />embd = 256<br/>pathways = 1024<br/>heads = 4<br/>layers = 6 |
-| 0.1      | removed due to data leakage                       |                                                         |                                                              |                                                              |
+| 0.3*  | Global MSE: 0.5153 <br /> Pearson R (Top 20): 0.9209 <br />$R^2$ (All): $\bar{x}$:0.9018 $Med$:0.9103 <br/>$R^2$ (Top 50): $\bar{x}$:0.0602 $Med$:0.2552<br />Pred Shift Mag: $\bar{x}$:0.5362 | JEPA: 6,019,840 <br />AC: 7,881,216 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Ep<br />Tr:20 Ep<br />Dec: 20 Ep | <u>PT+TR</u><br/>embd = 256<br/>heads = 4<br/>layers = 6     |
+| 0.2   | Global MSE: 0.7896 <br /> Pearson R (Top 20): 0.6046 <br />$R^2$ (All): $\bar{x}$: 0.9419 $Med$:0.9558 <br />$R^2$ (Top 50): $\bar{x}$: -0.0270 $Med$:0.2686<br />Pred Shift Mag: $\bar{x}$:0.3008 | JEPA: 11,139,584<br />AC: 6,853,632 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Ep<br />Tr:20 Ep<br />Dec: 20 Ep | <u>PT+TR</u><br />embd = 256<br/>pathways = 1024<br/>heads = 4<br/>layers = 6 |
+| 0.1   | removed due to data leakage                                  |                                                         |                                                              |                                                              |
 
 *Part of v0.3 and v0.2 performance is impacted by the way we embed perturbations.  Since we used ESM-2 embedding of the protein sequence, the embeddings have super high cosine simliarty so the holdout is not fully "unseen" given how much it overlaps with training. 
 
