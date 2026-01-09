@@ -45,7 +45,14 @@ $\bar{x}$ - mean | $\tilde{x}$ - median
 4. Expanded our dataset to include  other CRISPRi datasets including Replogle K562 Essential, Replogle K562 genome-wide, Replogle RPE1 essential, and Adamson - CRISPRi.  We're sticking with CRISPRi in this dataset but in the future version will add handling for different types (TBD how we do that).
 5. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set. 
 
-## v0.3 Architecture (WIP)
+## v0.4 Architecture (WIP)
+
+1. **Introduction of the Action Composer:** Replaced the static, discrete `pert_bank` lookup table with a dynamic `ActionComposer` module. Uses modality-specific projectors (Protein, Chemical, DNA) combined with a FiLM (Feature-wise Linear Modulation) layer conditioned on the "mode" of interaction (e.g., Agonist, Antagonist, Knockout).
+    1. **Benefit:** Enables **zero-shot generalization** to new perturbations across modalities. The model no longer relies on a fixed vocabulary of drug IDs trained during initialization but constructs action representations on the fly from raw chemical/biological features.
+2. **Complex Perturbation Embedding**: Perturbations now contain both the perturbation and the target as part of the input.  for CRISPRi we use [InstaDeepAI/NTv3_650M_pre](https://huggingface.co/InstaDeepAI/NTv3_650M_pre) to create embeddings for the sgRNA and then convert the target gene ENSEMBL ids into amino acid strings where we use [facebook/esm2_t6_8M_UR50D](https://huggingface.co/facebook/esm2_t6_8M_UR50D) to create embeddings.  These then get fed into a FiLM  composer that coembed different perturbation based on the modality, mode, perturbation (sgRNA seq), and target (gene protein seq). 
+    1. **Benefit**: This is the start of creating a highly generalizable model that can take in a wide range of pertubations for known modalities and modes and predict zero-shot the impact. 
+
+## v0.3 Architecture
 
 1. **Replaced Attention Mechanism:** Switched to linear attention (using kernelized attention with ELU + 1 feature maps).
     1. Benefit: Reduces complexity from $O(N^2)$ to $O(N)$ 
