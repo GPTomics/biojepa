@@ -29,6 +29,7 @@ Beyond just uses for therapeutic discovery, a model that learns the causal physi
 
 |V|Performance|Params|Data|Training Config|
 | - | - | - | - | - |
+|0.4|Global MSE: 0.4979<br /> Pearson R (Top 20): 0.9266 <br />$R^2$ (All): $\bar{x}$:0.9175 $\tilde{x}$:0.9272 <br/>$R^2$ (Top 50): $\bar{x}$:0.0962 $\tilde{x}$:0.3211<br/>Pred Shift Mag: $\bar{x}$:0.5379|JEPA: 6,019,840<br />AC: 7,881,216<br />Pert: 882,880|Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Ep<br />Tr:20 Ep<br />Dec: 20 Ep|<u>PT+TR</u><br/>embd = 256<br/>heads = 4<br/>layers = 6<br /><u>Pert</u><br />lat_dim = 320<br />mod_dim= 64|
 | 0.3*  | Global MSE: 0.5153 <br /> Pearson R (Top 20): 0.9209 <br />$R^2$ (All): $\bar{x}$:0.9018 $\tilde{x}$:0.9103 <br/>$R^2$ (Top 50): $\bar{x}$:0.0602 $\tilde{x}$:0.2552<br/>Pred Shift Mag: $\bar{x}$:0.5362 | JEPA: 6,019,840 <br />AC: 7,881,216 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Ep<br />Tr:20 Ep<br />Dec: 20 Ep | <u>PT+TR</u><br/>embd = 256<br/>heads = 4<br/>layers = 6     |
 | 0.2   | Global MSE: 0.7896 <br /> Pearson R (Top 20): 0.6046 <br />$R^2$ (All): $\bar{x}$: 0.9419 $\tilde{x}$:0.9558 <br />$R^2$ (Top 50): $\bar{x}$: -0.0270 $\tilde{x}$:0.2686<br />Pred Shift Mag: $\bar{x}$:0.3008 | JEPA: 11,139,584<br />AC: 6,853,632 | Gears [K562](https://maayanlab.cloud/Harmonizome/dataset/Replogle+et+al.%2C+Cell%2C+2022+K562+Essential+Perturb-seq+Gene+Perturbation+Signatures)<br />PT:100 Ep<br />Tr:20 Ep<br />Dec: 20 Ep | <u>PT+TR</u><br />embd = 256<br/>pathways = 1024<br/>heads = 4<br/>layers = 6 |
 | 0.1   | removed due to data leakage                                  |                                                         |                                                              |                                                              |
@@ -39,13 +40,11 @@ $\bar{x}$ - mean | $\tilde{x}$ - median
 
 ## To DO Architecture
 
-1. Figure out how to handle non protein based perturbations (pseudogenes, lncRNA)
-2. Figure out how to handle beyond just CRISPRi
-3. Remove the network collapse and rely on linear attention to improve tokenization flexibility 
-4. Expanded our dataset to include  other CRISPRi datasets including Replogle K562 Essential, Replogle K562 genome-wide, Replogle RPE1 essential, and Adamson - CRISPRi.  We're sticking with CRISPRi in this dataset but in the future version will add handling for different types (TBD how we do that).
-5. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set. 
+1. Add other perturbations beside CRISPRi
+2. Expanded our dataset to include  other CRISPRi datasets including Replogle K562 Essential, Replogle K562 genome-wide, Replogle RPE1 essential, and Adamson - CRISPRi.  We're sticking with CRISPRi in this dataset but in the future version will add handling for different types (TBD how we do that).
+3. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set. 
 
-## v0.4 Architecture (WIP)
+## v0.4 Architecture
 
 1. **Unified, Modular Perturbation Encoding with Explicit Target Awareness:** Perturbations are now represented as composite inputs that include both the perturbation itself and its biological target. For example, CRISPRi perturbations embed the sgRNA sequence (via  [Nucleotide Transformer v3_650M_pre](https://huggingface.co/InstaDeepAI/NTv3_650M_pre)) alongside the target gene’s protein sequence (via [ESM-2 8M_UR50D](https://huggingface.co/facebook/esm2_t6_8M_UR50D)). These heterogeneous embeddings are projected through modality-specific encoders (DNA, protein, chemical) and fused by a FiLM-based perturbation composer conditioned on perturbation mode (e.g., CRISPRi, CRISPRa, overexpression).
     1. Benefit: Establishes a general perturbation abstraction that cleanly separates what is perturbed, what it targets, and how it acts, enabling zero-shot generalization across modalities and perturbation types while keeping the core cell model agnostic to featurization details.
@@ -127,16 +126,15 @@ To create our latent space, we use a Pre-Norm Transformer Encoder block with Rot
 | **Adamson 2016**         | CRISPRi        | K562             | **Stress:** High-resolution view of toxicity pathways.       |
 | **Tahoe**                |                |                  |                                                              |
 | **McFaline-Figueroa**    |                |                  |                                                              |
+| **PerturbSapien**        |                |                  |                                                              |
+| scBaseCount              |                |                  |                                                              |
 
-4. TO DO: Improve perturbation so that it's more flexible.  Explore using a combination of `[entity embedding, mode embedding]` encoding where the sequence can be the amino acid, neuclaic acid, or SMILES so that it's more flexible to brand new pertrubations. 
-
-    1. **EntityEmbedding:** A vectorization of the gene or drug (e.g. from ESM-2 (Gene) or ChemBERTa (Drug).)
-        1. Longer term use a hybrid approach where you can have both protein encoding of genes along with nucleic acid so you can handle variant perturbations. 
-
-    2. **ModeEmbedding:** A learnable vector representing the *type* of perturbation. This is based on a fixed vocab  (e.g. MODE_DRUG_TREATMENT (for sci-Plex, Srivatsan), MODE_CRISPR_KO (for Replogle, Adamson), MODE_CRISPR_ACT (Activation/Overexpression for Norman), MODE_CONTROL (Doing nothing))
-
-5. TO DO: Add other types of valildation to see how well this model generalizes
-    1. Cell type prediction
+4. TO DO: Add other types of valildation to see how well this model generalizes
+    1. Cell type prediction (need to add label)
+    1. disease classification (need to add label)
+    1. batch identification
+    1. some prediction states (need cell X, how do i get it)... this requires some thinking 
+    1.  
 
 
 ## Other's Approaches
