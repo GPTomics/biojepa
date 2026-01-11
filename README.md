@@ -1,4 +1,4 @@
-## **V0.4 Technical Report new [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/biojepa_ac_v0_4_technical_report.md)**
+## **V0.4 Technical Report now [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/biojepa_ac_v0_4_technical_report.md)**
 
 
 
