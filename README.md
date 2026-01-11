@@ -1,4 +1,9 @@
+## **V0.4 Technical Report new [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/biojepa_ac_v0_4_technical_report.md)**
+
+
+
 # bio-JEPA
+
 Our goal is to build a "world model" for cells as inspired by [V JEPA 2-AC](https://github.com/facebookresearch/vjepa2). This means that a successful model learns the causal physics of cell states. Because there are billions of potential drug and gene combinations, it is impossible and too expensive for scientists to test them all in a physical lab to see what works. A successful model would act like a digital simulator that predicts the results of these experiments instantly, allowing prediction of how cell types would react to different perturbations (e.g. therapeutics, gene knockout)  
 
 ## Background / Notes
