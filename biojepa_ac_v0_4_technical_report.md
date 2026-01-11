@@ -271,6 +271,8 @@ The the current release do not include:
 2. Expand our "unseen" validation to fully excluded cell lines and perturbations to highlight the generalization capabilities of the model. 
 3. Expand our dataset to include different cell lines, different perturbation types/modalities, and more cell state measurements.
 
+For questions, comments, and inquiries, reach out to gptomics@gmail.com
+
 ## Works cited
 
 [1] Replogle, J. M., Saunders, R. A., Pogson, A. N., et al. (2022). *Mapping information-rich genotype–phenotype landscapes with genome-scale Perturb-seq.* Cell. DOI: 10.1016/j.cell.2022.05.013.
