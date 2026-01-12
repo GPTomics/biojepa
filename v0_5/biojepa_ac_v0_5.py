@@ -238,12 +238,16 @@ class CellStateEncoder(nn.Module):
         self.gene_embeddings = nn.Parameter(torch.randn(config.num_genes, config.embed_dim) * 0.02)
 
         # Expression Value Representation
+        self.input_scaler = nn.Linear(1, 1, bias=False)
         self.value_encoder = nn.Sequential(
             GaussianFourierProjection(config),
             nn.Linear(config.embed_dim, config.embed_dim),
-            nn.SiLU(), # switch for gating
+            nn.GELU(), 
             nn.Linear(config.embed_dim, config.embed_dim) # Project back to joint space
         )
+        nn.init.constant_(self.input_scaler.weight, 0.1)
+        nn.init.zeros_(self.value_encoder[-1].weight)
+        nn.init.zeros_(self.value_encoder[-1].bias)
 
         # learnable mask token, different than 0 expression
         self.mask_token = nn.Parameter(torch.randn(1, 1, config.embed_dim) * 0.02)
@@ -260,9 +264,9 @@ class CellStateEncoder(nn.Module):
         
     def forward(self, x_values, total_counts, mask_idx=None):
         # 1. Project Genes
-        x = x_values.unsqueeze(-1) 
+        x = self.input_scaler(x_values.unsqueeze(-1) )
         x = self.value_encoder(x)
-        x = self.gene_embeddings.unsqueeze(0)*x
+        x = self.gene_embeddings.unsqueeze(0) + x
 
         if mask_idx is not None:
             B, N, D = x.shape
