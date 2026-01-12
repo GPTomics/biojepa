@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This report presents BioJEPA-AC (Biological Joint-Embedding Predictive Architecture - Action Conditioned), a joint-embedding predictive architecture uses a shared latent space to learn cell dynamics and perturbation response. By integrating the representation learning capabilities of the Joint-Embedding Predictive Architecture (JEPA) with a multi-modal Action-Conditioned (AC) mechanism, BioJEPA-AC operates in a learned latent space to simulate the trajectory of cellular states under perturbation. We detail the theoretical underpinnings, including the transition from generative to predictive paradigms. Training is framed as masked latent prediction with an EMA teacher, VICReg-style regularization, and an auxiliary action-state alignment objective. 
+This report presents BioJEPA-AC (Biological Joint-Embedding Predictive Architecture - Action Conditioned), a joint-embedding predictive architecture that uses a shared latent space to learn cell dynamics and perturbation response. By integrating the representation learning capabilities of the Joint-Embedding Predictive Architecture (JEPA) with a multi-modal Action-Conditioned (AC) mechanism, BioJEPA-AC operates in a learned latent space to simulate the trajectory of cellular states under perturbation. We detail the theoretical underpinnings, including the transition from generative to predictive paradigms. Training is framed as masked latent prediction with an EMA teacher, VICReg-style regularization, and an auxiliary action-state alignment objective. 
 
 We show that with training limited to just the K562-essential dataset ^[1]^ using the test splits mirroring GEARS^[9]^ we're able to achieve a MSE 0.4979, top-20 Pearson correlation 0.9266, a \(R^2\) over all genes with a mean 0.9175 (median 0.9272), and a \(R^2\) over the top 50 differentially expressed genes with a mean 0.0962 (median 0.3211). 
 
@@ -14,7 +14,7 @@ Large-scale single-cell perturbation screens (e.g., CRISPRi Perturb-seq) produce
 
 ### 1.2 Why Predicting Perturbation Responses is Hard
 
-Predicting perturbation response helps validate how well a model has learned cell dynamics. If a model can predict the impact on a wide range of unseen perturbations, we can see that the model is simulating cell environments. The key data for learning and evaluating these models starts with perturbSeq based on single-cell sequencing. Because of the following properties, using scRNA-seq perturbation screen on a model that learnes in the latent space rather than directly on the expression-space seems fruitful:
+Predicting perturbation response helps validate how well a model has learned cell dynamics. If a model can predict the impact on a wide range of unseen perturbations, we can see that the model is simulating cell environments. The key data for learning and evaluating these models starts with perturbSeq based on single-cell sequencing. Because of the following properties, using scRNA-seq perturbation screen on a model that learns in the latent space rather than directly on the expression-space seems fruitful:
 
 - Dimensionality: expression vectors span thousands of genes, and the effective degrees of freedom depend on preprocessing and feature selection.
 - Heterogeneity: cells under the same perturbation condition can occupy multiple transcriptional states ^[1]^.
@@ -77,7 +77,7 @@ The BioJEPA-AC architecture is designed to handle permutation invariance (genes 
 
 ### 3.1 Linear Projection with Gene Identity
 
-Each cell is comprised of a set of gene identities represented via learned embeddings scaled based on the level of observed expression. The total expression magnitude is incorporated via an explicit value encoding (including a total-count feature) before passing tokens through transformer layers. Each gene $i$ has a learned embedding vector $e_i \in \mathbb{R}^d$. The scalar expression value $x_i$ scales the gene embedding: $h_i = x_i \cdot e_i$. The total mRNA count (library size) is projected to a vector and added as a bias term to every gene embedding. This explicitly models total detected genes as a global covariate allowing models to learn when cells are no longer viable. This "bag-of-genes" approach preserves the continuous nature of the data and allows the create a cell state latent by differentiatiating between genes solely based on their learned identity embedding $e_i$.
+Each cell consists of a set of gene identities represented via learned embeddings scaled based on the level of observed expression. The total expression magnitude is incorporated via an explicit value encoding (including a total-count feature) before passing tokens through transformer layers. Each gene $i$ has a learned embedding vector $e_i \in \mathbb{R}^d$. The scalar expression value $x_i$ scales the gene embedding: $h_i = x_i \cdot e_i$. The total mRNA count (library size) is projected to a vector and added as a bias term to every gene embedding. This explicitly models total detected genes as a global covariate allowing models to learn when cells are no longer viable. This "bag-of-genes" approach preserves the continuous nature of the data and allows the create a cell state latent by differentiating between genes solely based on their learned identity embedding $e_i$.
 
 ### 3.2 Cell State Encoder
 
@@ -89,21 +89,21 @@ A major bottleneck in applying transformers to scRNA-seq is the quadratic comple
 
 #### 3.2.2 The Student-Teacher Framework
 
-BioJEPA-AC maintains a student encoder and, to provide stable targets for the predictor, an exponential moving average (EMA) teacher encoder that is structurally identical to the student encoder. This shared sturcture allows for a unified embedding space. 
+BioJEPA-AC maintains a student encoder and, to provide stable targets for the predictor, an exponential moving average (EMA) teacher encoder that is structurally identical to the student encoder. This shared structure allows for a unified embedding space. 
 
 The teacher parameters $\xi_{\text{t}}$ are not updated via gradient descent. Instead, they track the student parameters $\theta_{\text{s}}$ via exponential moving average based on a specified momentum $m$ (set to 0.996^[14]^):
 $$
 \xi_{\text{t}} \leftarrow m\xi_{\text{t}} + (1-m)\theta_{\text{s}}
 $$
-In practice, this means teacher processes the target view ($x_{target}$) to generate the ground-truth embedding $z_{target}$ which we calcualte loss against, preventing "target chasing" instabilities.
+In practice, this means the teacher processes the target view ($x_{target}$) to generate the ground-truth embedding $z_{target}$ which we calculate loss against, preventing "target chasing" instabilities.
 
 #### 3.2.3 Masking Strategy
 
-Pretraining and action-conditioned training randomly masks a subset of gene positions and predicts their teacher latents. We use a default mask ratio is 0.6 (60%), which is consistent with masked-reconstruction regimes used in other domains (e.g., masked autoencoders)^[15]^. 
+Pretraining and action-conditioned training randomly masks a subset of gene positions and predicts their teacher latents. We use a default mask ratio of 0.6 (60%), which is consistent with masked-reconstruction regimes used in other domains (e.g., masked autoencoders)^[15]^.
 
 ### 3.3 The Action Composer
 
-To enable our "AC" variant to predict perturabation impact, we use an action composer to encode heterogeneous perturbations into a unified latent space and use them to shift our cell state latent. 
+To enable our "AC" variant to predict perturbation impact, we use an action composer to encode heterogeneous perturbations into a unified latent space and use them to shift our cell state latent. 
 
 #### 3.3.1 Multi-Modal Perturbation Embeddings (Preprocessing)
 
@@ -113,7 +113,7 @@ The composer ingests raw features depending on the perturbation source:
 - **Protein (Overexpression/Targets):** Processed by ESM-2^[19]^, yielding 320-dimensional vectors based on amino acid sequences. This provides a rich prior on the function of the target gene and the function of introduced protein perturbations (e.g. mABs)
 - **Chemical (Small Molecules):** When introduced, these will be [processed via Morgan fingerprints or SMILES embeddings (768-dimensional). 
 
-These features are projected via linear layers into a shared content latent space $c \in \mathbb{R}^{320}$. Since we limited our current training to the K562 Essential dataset, our only perturbation at this point is CRISPRi^[1]^. To process these perturbation we created embeddings for the sgRNA using the DNA modality above and converted the target gene identifiers to protein sequences which we embedded with ESM-2.
+These features are projected via linear layers into a shared content latent space $c \in \mathbb{R}^{320}$. Since we limited our current training to the K562 Essential dataset, our only perturbation at this point is CRISPRi^[1]^. To process these perturbations we created embeddings for the sgRNA using the DNA modality above and converted the target gene identifiers to protein sequences which we embedded with ESM-2.
 
 #### 3.3.2 Mode-of-Action and FiLM Conditioning
 
@@ -126,7 +126,7 @@ The scale ($s$) and shift ($t$) parameters modulate the action vector. This allo
 
 ### 3.4 The Action-Conditioned Predictor (Causal Simulator)
 
-A key component of our "AC" variant is the Action-Coditioed Predictor. The predictor network functions as the causal simulator. It consumes control latents \(z_c\) and action latent \(a\), forms learnable target queries for masked genes, and applies attention blocks to produce per-token level vectors to shift our cell state representation in the shared latent space. 
+A key component of our "AC" variant is the Action-Conditioned Predictor. The predictor network functions as the causal simulator. It consumes control latents \(z_c\) and action latent \(a\), forms learnable target queries for masked genes, and applies attention blocks to produce per-token level vectors to shift our cell state representation in the shared latent space. 
 
 - **Cross-Attention Injection:** The predictor is a transformer decoder to the shared latent space. The action latent $a$ is treated as the **Key (K)** and **Value (V)**, while the cell state tokens act as **Queries (Q)**. This "injects" the perturbation information globally into every token.
 - **Dynamics Propagation:** Subsequent self-attention layers allow the tokens to update their states based on the injected perturbation and their neighbors, modeling the propagation of the signal through the learned interactions.
@@ -147,7 +147,7 @@ The capabilities of BioJEPA-AC are inextricably linked to the scale and quality 
 
 ### 4.1 The K562 Essential Perturb-seq Dataset
 
-BioJEPA-AC is trained and evaluated on the GEARS packaging of the K562 genome-scale Perturb-seq CRISPRi dataset (“K562 Essential”).^[1,9]^ The dataset contains pooled single-cell profiles with genetic perturbations and matched controls, together with guide/target annotations. GEARS provides standardized train/validation/test splits and preprocessing utilities that are used in this work.^[9]^ Preprocessing follows the GEARS pipeline, including selection of the Top-5,000 variable genes and log-normalization of expression counts (as configured by the GEARS dataset loader).^[9]^ After processing, the dataset contained 141,555 total cells and 28% were held out for test/val splits. For these cells, expression levels were available for 5,000 total genes and had perturbations targetting 1,087 unique genes.
+BioJEPA-AC is trained and evaluated on the GEARS packaging of the K562 genome-scale Perturb-seq CRISPRi dataset (“K562 Essential”).^[1,9]^ The dataset contains pooled single-cell profiles with genetic perturbations and matched controls, together with guide/target annotations. GEARS provides standardized train/validation/test splits and preprocessing utilities that are used in this work.^[9]^ Preprocessing follows the GEARS pipeline, including selection of the Top-5,000 variable genes and log-normalization of expression counts (as configured by the GEARS dataset loader).^[9]^ After processing, the dataset contained 141,555 total cells and 28% were held out for test/val splits. For these cells, expression levels were available for 5,000 total genes and had perturbations targeting 1,087 unique genes.
 
 ## 5. Training Dynamics and Optimization
 
@@ -205,7 +205,7 @@ $$
 $$
 
 
-The paired (Control, Perturbation, Case) data passes through the full model. The Student receives the control cell state. The Teacher receives the perturbed cell state. The action composer receives the perturbation representation. The action-conditioned predictor receives the control latent and the pertrubation latent to then generate a perturbed cell latent. Crucially, the student and teacher encoders are frozen during this phase. This treats the encoders as a fixed feature extractor, preserving the general manifold structure learned during pretraining and preventing overfitting to the smaller perturbation dataset. To calculate loss we use combination of reconstruction loss (NLL on masked gene latents) and VICReg consistency loss on the difference between the teacher's perturbed cell latent and the ACpredictor's perturbed cell latent.
+The paired (Control, Perturbation, Case) data passes through the full model. The Student receives the control cell state. The Teacher receives the perturbed cell state. The action composer receives the perturbation representation. The action-conditioned predictor receives the control latent and the perturbation latent to then generate a perturbed cell latent. Crucially, the student and teacher encoders are frozen during this phase. This treats the encoders as a fixed feature extractor, preserving the general manifold structure learned during pretraining and preventing overfitting to the smaller perturbation dataset. To calculate loss we use a combination of reconstruction loss (NLL on masked gene latents) and VICReg consistency loss on the difference between the teacher's perturbed cell latent and the ACpredictor's perturbed cell latent.
 \[
 \mathcal{L}_{AC} = \lambda_{sim} \mathcal{L}_{NLL} + \mathcal{L}_{VICReg}
 \]
