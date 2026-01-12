@@ -14,7 +14,7 @@ Large-scale single-cell perturbation screens (e.g., CRISPRi Perturb-seq) produce
 
 ### 1.2 Why Predicting Perturbation Responses is Hard
 
-Predicting perturbation response helps validate how well a model has learned cell dynamics. If a model can predict the impact on a wide range of unseen perturbations, we can see that the model is simulating cell environments. The key data for learning and evaluating these models starts with perturbSeq based on single-cell seuqnecing. Because of the following properties, using scRNA-seq perturbation screen on a model that learnes in the latent space rather than directly on the expression-space seems fruitful:
+Predicting perturbation response helps validate how well a model has learned cell dynamics. If a model can predict the impact on a wide range of unseen perturbations, we can see that the model is simulating cell environments. The key data for learning and evaluating these models starts with perturbSeq based on single-cell sequencing. Because of the following properties, using scRNA-seq perturbation screen on a model that learnes in the latent space rather than directly on the expression-space seems fruitful:
 
 - Dimensionality: expression vectors span thousands of genes, and the effective degrees of freedom depend on preprocessing and feature selection.
 - Heterogeneity: cells under the same perturbation condition can occupy multiple transcriptional states ^[1]^.
