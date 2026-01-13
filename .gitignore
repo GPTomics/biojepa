@@ -43,3 +43,12 @@ PROCESSED_DATA/*
 # Jupyter Notebook
 .ipynb_checkpoints
 __pycache__
+
+
+# Python Cache #
+*.pyc
+*.*.pyc
+
+# Claude Code support
+CLAUDE.md
+instructions.md
