@@ -130,6 +130,10 @@ class AlignmentLoader(_BaseShardLoader):
 
 
 class TrainingLoader(_BaseShardLoader):
+    def __init__(self, batch_size, split, data_dir, device, return_batch_id=False):
+        self.return_batch_id = return_batch_id
+        super().__init__(batch_size, split, data_dir, device)
+
     def load_file(self, filename):
         print(f'loading {filename}')
         with np.load(filename) as data:
@@ -137,11 +141,13 @@ class TrainingLoader(_BaseShardLoader):
             control_tot = data['control_total'].astype(np.float32)
             case_x = data['case'].astype(np.float32)
             case_tot = data['case_total'].astype(np.float32)
-            
-            # Metadata indices
             p_idx = data['pert_idx'].astype(np.int64)
             p_mod = data['pert_modality'].astype(np.int64)
             p_mode = data['pert_mode'].astype(np.int64)
-            
+
+            if self.return_batch_id:
+                batch_id = data['batch_id'].astype(np.int64)
+                return control_x, control_tot, case_x, case_tot, p_idx, p_mod, p_mode, batch_id
+
         return control_x, control_tot, case_x, case_tot, p_idx, p_mod, p_mode
 

@@ -1,0 +1,301 @@
+{
+  "version": "v0.5",
+  "evals": {
+    "eval_1_expression_prediction": {
+      "run_date": "2026-01-14 17:21",
+      "config": {
+        "test_perturbations": 286,
+        "genes": 5000,
+        "test_samples": 38816
+      },
+      "sample_level": {
+        "mse": 0.6021244525909424,
+        "pearson_r_top20": 0.7332439422607422
+      },
+      "perturbation_level": {
+        "r2_all_genes": {
+          "mean": 0.7798973213542592,
+          "median": 0.793123871088028
+        },
+        "r2_top50_degs": {
+          "mean": -1.0833018895212587,
+          "median": -0.6699193716049194
+        },
+        "mse": {
+          "mean": 0.06949646025896072,
+          "median": 0.06420192122459412
+        }
+      },
+      "severity": {
+        "pearson_r": 0.8410665392875671,
+        "spearman_r": 0.4929106836680649
+      },
+      "error_by_magnitude": {
+        "0-0.25": {
+          "mae": 0.147328183054924,
+          "count": 1324752
+        },
+        "0.25-0.5": {
+          "mae": 0.34419918060302734,
+          "count": 93590
+        },
+        "0.5-1.0": {
+          "mae": 0.5766543745994568,
+          "count": 9605
+        },
+        "1.0-1.5": {
+          "mae": 0.7106979489326477,
+          "count": 957
+        },
+        "1.5-2.0": {
+          "mae": 1.1025580167770386,
+          "count": 991
+        },
+        "2.0+": {
+          "mae": 1.5477126836776733,
+          "count": 105
+        }
+      }
+    },
+    "eval_2_gene_level_analysis": {
+      "run_date": "2026-01-14 17:22",
+      "config": {
+        "test_perturbations": 286,
+        "genes": 5000,
+        "direction_threshold": 0.25
+      },
+      "direction_of_effect": {
+        "all_genes_accuracy": 0.7865475524475525,
+        "top50_degs_accuracy": 0.253986013986014,
+        "accuracy_by_magnitude": {
+          "0-0.25": {
+            "accuracy": 0.8332876643047098,
+            "count": 1324749
+          },
+          "0.25-0.5": {
+            "accuracy": 0.17672952614990117,
+            "count": 93595
+          },
+          "0.5-1.0": {
+            "accuracy": 0.27626783296886387,
+            "count": 9603
+          },
+          "1.0-1.5": {
+            "accuracy": 0.7816091954022989,
+            "count": 957
+          },
+          "1.5-2.0": {
+            "accuracy": 0.8526740665993946,
+            "count": 991
+          },
+          "2.0+": {
+            "accuracy": 0.7523809523809524,
+            "count": 105
+          }
+        }
+      },
+      "top_deg_recovery": {
+        "10": {
+          "precision": 0.008391608391608393,
+          "ndcg": 0.009859589822197694,
+          "overlap": 0.08391608391608392,
+          "vs_random": 4.195804195804196
+        },
+        "20": {
+          "precision": 0.011188811188811189,
+          "ndcg": 0.01351963936616476,
+          "overlap": 0.22377622377622378,
+          "vs_random": 2.797202797202797
+        },
+        "50": {
+          "precision": 0.024055944055944054,
+          "ndcg": 0.02581884490207402,
+          "overlap": 1.2027972027972027,
+          "vs_random": 2.4055944055944054
+        },
+        "100": {
+          "precision": 0.04297202797202797,
+          "ndcg": 0.04659270425402781,
+          "overlap": 4.2972027972027975,
+          "vs_random": 2.1486013986013988
+        }
+      }
+    },
+    "eval_3_perturbation_retrieval": {
+      "run_date": "2026-01-14 17:25",
+      "config": {
+        "test_perturbations_evaluated": 100,
+        "total_perturbations_in_bank": 1250,
+        "genes": 5000,
+        "similarity_metric": "cosine"
+      },
+      "metrics": {
+        "mrr": 0.004762735768229434,
+        "median_rank": 685.0,
+        "mean_rank": 627.39
+      },
+      "recall_at_k": {
+        "1": {
+          "recall": 0.0,
+          "vs_random": 0.0
+        },
+        "5": {
+          "recall": 0.0,
+          "vs_random": 0.0
+        },
+        "10": {
+          "recall": 0.0,
+          "vs_random": 0.0
+        },
+        "20": {
+          "recall": 0.01,
+          "vs_random": 0.625
+        },
+        "50": {
+          "recall": 0.06,
+          "vs_random": 1.5
+        }
+      }
+    },
+    "eval_5_batch_invariance": {
+      "run_date": "2026-01-14 17:28",
+      "config": {
+        "samples": 38816,
+        "embedding_dim": 8,
+        "num_batches": 48,
+        "num_perturbations": 286
+      },
+      "batch_classifier": {
+        "accuracy": 0.028722308088614118,
+        "chance": 0.020833333333333332,
+        "above_chance_ratio": 1.3786707882534777
+      },
+      "perturbation_classifier": {
+        "accuracy": 0.007856774858320453,
+        "chance": 0.0034965034965034965,
+        "above_chance_ratio": 2.2470376094796496
+      },
+      "invariance_ratio": 0.27354260089686094
+    },
+    "eval_4_uncertainty_calibration": {
+      "run_date": "2026-01-14 17:29",
+      "config": {
+        "samples": 38816,
+        "perturbations": 286
+      },
+      "sample_level": {
+        "uncertainty_error_pearson": -0.07777776569128036,
+        "uncertainty_error_spearman": -0.08529126731652552,
+        "expected_calibration_error": 0.18813445233499596,
+        "monotonicity_score": 0.3333333333333333
+      },
+      "perturbation_level": {
+        "uncertainty_error_pearson": -0.07808804512023926,
+        "uncertainty_error_spearman": -0.0982301395651845
+      },
+      "bin_analysis": {
+        "n_bins": 10,
+        "bin_mean_errors": [
+          0.6277011632919312,
+          0.6130001544952393,
+          0.6047844886779785,
+          0.5990452170372009,
+          0.6009784936904907,
+          0.5963524580001831,
+          0.5940311551094055,
+          0.5975819230079651,
+          0.5935832262039185,
+          0.5941097736358643
+        ],
+        "bin_counts": [
+          3882,
+          3881,
+          3882,
+          3881,
+          3882,
+          3881,
+          3882,
+          3881,
+          3882,
+          3882
+        ]
+      }
+    },
+    "eval_6_embedding_pathways": {
+      "run_date": "2026-01-14 17:30",
+      "config": {
+        "n_genes": 5000,
+        "n_perturbations": 1250,
+        "pathway_libraries": [
+          "KEGG_2021_Human",
+          "Reactome_Pathways_2024"
+        ]
+      },
+      "gene_embeddings": {
+        "kegg": {
+          "silhouette_score": -0.23731619119644165,
+          "knn_accuracy": 0.2833333333333333,
+          "n_classes": 54,
+          "n_samples": 1140
+        },
+        "reactome": {
+          "silhouette_score": -0.22519418597221375,
+          "knn_accuracy": 0.2594221105527638,
+          "n_classes": 73,
+          "n_samples": 1592
+        }
+      },
+      "action_vectors": {
+        "kegg": {
+          "silhouette_score": -0.4120439291000366,
+          "knn_accuracy": 0.3864077669902913,
+          "n_classes": 27,
+          "n_samples": 515
+        }
+      }
+    },
+    "eval_8_essential_genes": {
+      "run_date": "2026-01-14 17:31",
+      "config": {
+        "matched_genes": 4541,
+        "train_genes": 3563,
+        "test_genes": 891,
+        "essential_threshold": -0.5,
+        "depmap_source": "depmap-downloader (latest)"
+      },
+      "regression": {
+        "pearson_train": 0.3024667273374766,
+        "pearson_test": 0.2819101108571931,
+        "spearman_train": 0.21112147639367804,
+        "spearman_test": 0.24402085041476382
+      },
+      "classification": {
+        "auroc_train": 0.7049423330489878,
+        "auroc_test": 0.7118385484927916,
+        "n_essential_test": 128,
+        "n_non_essential_test": 763
+      }
+    },
+    "eval_7_moa_matching": {
+      "run_date": "2026-01-14 17:34",
+      "config": {
+        "n_pathways": 13,
+        "n_perturbations": 116,
+        "min_perts_per_pathway": 3,
+        "pathway_size_range": [
+          15,
+          200
+        ]
+      },
+      "similarity": {
+        "mean_within_pathway": 0.9438549222046867,
+        "mean_between_pathway": 0.9430265588966112,
+        "similarity_ratio": 1.0008784093091128,
+        "mann_whitney_p": 0.24498001233637973,
+        "n_within_pairs": 771,
+        "n_between_pairs": 5899
+      }
+    }
+  },
+  "last_updated": "2026-01-14 17:34"
+}

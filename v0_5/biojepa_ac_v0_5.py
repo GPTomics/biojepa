@@ -227,7 +227,7 @@ class CellStateEncoderConfig:
     heads: int = 12
     embed_dim: int = 768
     mlp_ratio: float = 4.0 
-    gaussian_scale: float = 10.0
+    gaussian_scale: float = 1.0
 
 class CellStateEncoder(nn.Module):
     def __init__(self, config):
@@ -239,18 +239,13 @@ class CellStateEncoder(nn.Module):
 
         # Expression Value Representation
         self.linear_scaler = nn.Linear(1, 1, bias=False)
-        self.fourier_scaler = nn.Linear(1, 1, bias=False)
-
-        self.correction_encoder = nn.Sequential(
-            GaussianFourierProjection(config),
+        self.fourier_input_scaler = nn.Linear(1, 1, bias=False)
+        self.fourier_projection = GaussianFourierProjection(config)
+        self.film_generator = nn.Sequential(
             nn.Linear(config.embed_dim, config.embed_dim),
             nn.GELU(),
-            nn.Linear(config.embed_dim, config.embed_dim)
+            nn.Linear(config.embed_dim, config.embed_dim * 2) # Output Gamma + Beta
         )
-        nn.init.constant_(self.linear_scaler.weight, 0.1)
-        nn.init.constant_(self.fourier_scaler.weight, 0.1)
-        nn.init.zeros_(self.correction_encoder[-1].weight)
-        nn.init.zeros_(self.correction_encoder[-1].bias)
 
         # learnable mask token, different than 0 expression
         self.mask_token = nn.Parameter(torch.randn(1, 1, config.embed_dim) * 0.02)
@@ -264,17 +259,24 @@ class CellStateEncoder(nn.Module):
 
         # Initiation 
         self.apply(init_weights_robust)
+        nn.init.constant_(self.linear_scaler.weight, 0.1)
+        nn.init.constant_(self.fourier_input_scaler.weight, 0.1)
+        nn.init.zeros_(self.film_generator[-1].weight)
+        nn.init.zeros_(self.film_generator[-1].bias)
         
     def forward(self, x_values, total_counts, mask_idx=None):
         # 1. Project Genes
-        x = x_values.unsqueeze(-1) 
+        x = x_values.unsqueeze(-1)
+
         scaled_x = self.linear_scaler(x)
         scaled_x = self.gene_embeddings.unsqueeze(0) * scaled_x
-        
-        fourier_x = self.fourier_scaler(x)
-        fourier_x = self.correction_encoder(fourier_x)
 
-        x = scaled_x + fourier_x
+        fourier_x = self.fourier_input_scaler(x)
+        fourier_x = self.fourier_projection(fourier_x)
+        fourier_x = self.film_generator(fourier_x)
+        gamma, beta = torch.chunk(fourier_x, 2, dim=-1)
+
+        x = scaled_x * (1.0 + gamma) + beta
 
         if mask_idx is not None:
             B, N, D = x.shape
