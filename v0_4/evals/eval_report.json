@@ -1,129 +1,129 @@
 {
   "version": "v0.4",
-  "last_updated": "2026-01-14 17:27",
+  "last_updated": "2026-01-15 21:16",
   "evals": {
     "eval_1_expression_prediction": {
-      "run_date": "2026-01-14 14:49",
+      "run_date": "2026-01-15 21:00",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "test_samples": 38816
       },
       "sample_level": {
-        "mse": 0.5139741897583008,
-        "pearson_r_top20": 0.8704174757003784
+        "mse": 0.5139697194099426,
+        "pearson_r_top20": 0.8710945844650269
       },
       "perturbation_level": {
         "r2_all_genes": {
-          "mean": 0.8664882335212681,
-          "median": 0.8749286532402039
+          "mean": 0.8665344362909143,
+          "median": 0.8748916685581207
         },
         "r2_top50_degs": {
-          "mean": -0.0842904135897443,
-          "median": 0.145445317029953
+          "mean": -0.09822501148377265,
+          "median": 0.15279433131217957
         },
         "mse": {
-          "mean": 0.04249697923660278,
-          "median": 0.03877509757876396
+          "mean": 0.042496226727962494,
+          "median": 0.03886881098151207
         }
       },
       "severity": {
-        "pearson_r": 0.8547970056533813,
-        "spearman_r": 0.499610017710146
+        "pearson_r": 0.8548302054405212,
+        "spearman_r": 0.4788641397113797
       },
       "error_by_magnitude": {
         "0-0.25": {
-          "mae": 0.1484854370355606,
-          "count": 1325814
+          "mae": 0.14809323847293854,
+          "count": 1324724
         },
         "0.25-0.5": {
-          "mae": 0.2384028285741806,
-          "count": 92792
+          "mae": 0.2424195259809494,
+          "count": 93615
         },
         "0.5-1.0": {
-          "mae": 0.4289475679397583,
-          "count": 9479
+          "mae": 0.42731592059135437,
+          "count": 9608
         },
         "1.0-1.5": {
-          "mae": 0.6118096113204956,
-          "count": 880
+          "mae": 0.5631468296051025,
+          "count": 957
         },
         "1.5-2.0": {
-          "mae": 1.0895613431930542,
-          "count": 886
+          "mae": 1.0682355165481567,
+          "count": 991
         },
         "2.0+": {
-          "mae": 1.2579798698425293,
-          "count": 149
+          "mae": 1.4868922233581543,
+          "count": 105
         }
       }
     },
     "eval_2_gene_level_analysis": {
-      "run_date": "2026-01-14 14:28",
+      "run_date": "2026-01-15 21:00",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "direction_threshold": 0.25
       },
       "direction_of_effect": {
-        "all_genes_accuracy": 0.7987573426573427,
-        "top50_degs_accuracy": 0.39174825174825173,
+        "all_genes_accuracy": 0.7989006993006993,
+        "top50_degs_accuracy": 0.37993006993006995,
         "accuracy_by_magnitude": {
           "0-0.25": {
-            "accuracy": 0.8374871027496033,
-            "count": 1325864
+            "accuracy": 0.8383700452832297,
+            "count": 1324773
           },
           "0.25-0.5": {
-            "accuracy": 0.2815262862811058,
-            "count": 92748
+            "accuracy": 0.27680995233311245,
+            "count": 93566
           },
           "0.5-1.0": {
-            "accuracy": 0.4223582814314367,
-            "count": 9473
+            "accuracy": 0.4214196502914238,
+            "count": 9608
           },
           "1.0-1.5": {
-            "accuracy": 0.8511363636363637,
-            "count": 880
+            "accuracy": 0.8349007314524556,
+            "count": 957
           },
           "1.5-2.0": {
-            "accuracy": 0.9345372460496614,
-            "count": 886
+            "accuracy": 0.9445005045408678,
+            "count": 991
           },
           "2.0+": {
-            "accuracy": 0.9395973154362416,
-            "count": 149
+            "accuracy": 0.8952380952380953,
+            "count": 105
           }
         }
       },
       "top_deg_recovery": {
         "10": {
-          "precision": 0.013286713286713289,
-          "ndcg": 0.013432510063196536,
-          "overlap": 0.13286713286713286,
-          "vs_random": 6.643356643356643
+          "precision": 0.01223776223776224,
+          "ndcg": 0.013013695868530732,
+          "overlap": 0.12237762237762238,
+          "vs_random": 6.118881118881119
         },
         "20": {
-          "precision": 0.023776223776223775,
-          "ndcg": 0.02412494506858837,
-          "overlap": 0.4755244755244755,
-          "vs_random": 5.944055944055944
+          "precision": 0.022202797202797202,
+          "ndcg": 0.021898879081963668,
+          "overlap": 0.44405594405594406,
+          "vs_random": 5.550699300699301
         },
         "50": {
-          "precision": 0.05524475524475524,
-          "ndcg": 0.054259313514547686,
-          "overlap": 2.762237762237762,
-          "vs_random": 5.524475524475524
+          "precision": 0.056503496503496495,
+          "ndcg": 0.05486340226475304,
+          "overlap": 2.825174825174825,
+          "vs_random": 5.65034965034965
         },
         "100": {
-          "precision": 0.08643356643356644,
-          "ndcg": 0.08776531768236905,
-          "overlap": 8.643356643356643,
-          "vs_random": 4.321678321678322
+          "precision": 0.08594405594405594,
+          "ndcg": 0.08740816952806647,
+          "overlap": 8.594405594405595,
+          "vs_random": 4.2972027972027975
         }
       }
     },
     "eval_3_perturbation_retrieval": {
-      "run_date": "2026-01-14 14:36",
+      "run_date": "2026-01-15 21:16",
       "config": {
         "test_perturbations_evaluated": 100,
         "total_perturbations_in_bank": 1250,
@@ -131,68 +131,68 @@
         "similarity_metric": "cosine"
       },
       "metrics": {
-        "mrr": 0.005651767267841813,
-        "median_rank": 658.0,
-        "mean_rank": 626.42
+        "mrr": 0.01891179397966071,
+        "median_rank": 602.0,
+        "mean_rank": 590.25
       },
       "recall_at_k": {
         "1": {
-          "recall": 0.0,
-          "vs_random": 0.0
+          "recall": 0.01,
+          "vs_random": 12.5
         },
         "5": {
-          "recall": 0.01,
-          "vs_random": 2.5
+          "recall": 0.02,
+          "vs_random": 5.0
         },
         "10": {
-          "recall": 0.01,
-          "vs_random": 1.25
+          "recall": 0.02,
+          "vs_random": 2.5
         },
         "20": {
           "recall": 0.02,
           "vs_random": 1.25
         },
         "50": {
-          "recall": 0.03,
-          "vs_random": 0.75
+          "recall": 0.06,
+          "vs_random": 1.5
         }
       }
     },
     "eval_4_uncertainty_calibration": {
-      "run_date": "2026-01-14 14:49",
+      "run_date": "2026-01-15 21:12",
       "config": {
         "samples": 38816,
         "perturbations": 286
       },
       "sample_level": {
-        "uncertainty_error_pearson": -0.10374855250120163,
-        "uncertainty_error_spearman": -0.11174369049448978,
-        "expected_calibration_error": 0.08700380281269586,
-        "monotonicity_score": 0.3333333333333333
+        "uncertainty_error_pearson": -0.10781621932983398,
+        "uncertainty_error_spearman": -0.11229333441216069,
+        "expected_calibration_error": 0.09608951809732373,
+        "monotonicity_score": 0.1111111111111111
       },
       "perturbation_level": {
-        "uncertainty_error_pearson": 0.019391965121030807,
-        "uncertainty_error_spearman": 0.045397221520456436
+        "uncertainty_error_pearson": 0.01954984851181507,
+        "uncertainty_error_spearman": 0.04773275504982821
       },
       "bin_analysis": {
         "n_bins": 10,
         "bin_mean_errors": [
-          0.547911524772644,
-          0.5244860053062439,
-          0.5140269994735718,
-          0.5097888112068176,
-          0.5117324590682983,
-          0.5060461163520813,
-          0.5066588521003723,
-          0.506364107131958,
-          0.5051498413085938,
-          0.5075433254241943
+          0.5458245873451233,
+          0.524376392364502,
+          0.5147363543510437,
+          0.5138471722602844,
+          0.5099274516105652,
+          0.508420467376709,
+          0.5060322880744934,
+          0.5035884380340576,
+          0.5073444843292236,
+          0.5055795311927795
         ],
         "bin_counts": [
           3882,
           3881,
-          3881,
           3882,
+          3881,
           3882,
           3881,
           3882,
@@ -203,7 +203,7 @@
       }
     },
     "eval_5_batch_invariance": {
-      "run_date": "2026-01-14 15:31",
+      "run_date": "2026-01-15 21:05",
       "config": {
         "samples": 38816,
         "embedding_dim": 8,
@@ -211,19 +211,19 @@
         "num_perturbations": 286
       },
       "batch_classifier": {
-        "accuracy": 0.03516228748068006,
+        "accuracy": 0.02949510561566203,
         "chance": 0.020833333333333332,
-        "above_chance_ratio": 1.687789799072643
+        "above_chance_ratio": 1.4157650695517774
       },
       "perturbation_classifier": {
-        "accuracy": 0.008500772797527048,
+        "accuracy": 0.013395157135497167,
         "chance": 0.0034965034965034965,
-        "above_chance_ratio": 2.4312210200927358
+        "above_chance_ratio": 3.8310149407521896
       },
-      "invariance_ratio": 0.2417582417582418
+      "invariance_ratio": 0.45414847161572053
     },
     "eval_6_embedding_pathways": {
-      "run_date": "2026-01-14 17:27",
+      "run_date": "2026-01-15 21:06",
       "config": {
         "n_genes": 5000,
         "n_perturbations": 1250,
@@ -256,7 +256,7 @@
       }
     },
     "eval_7_moa_matching": {
-      "run_date": "2026-01-14 16:15",
+      "run_date": "2026-01-15 21:16",
       "config": {
         "n_pathways": 13,
         "n_perturbations": 116,
@@ -267,16 +267,16 @@
         ]
       },
       "similarity": {
-        "mean_within_pathway": 0.8880224404115097,
-        "mean_between_pathway": 0.8849433493633252,
-        "similarity_ratio": 1.0034794216493064,
-        "mann_whitney_p": 0.1451339216709696,
+        "mean_within_pathway": 0.8880265048393646,
+        "mean_between_pathway": 0.8849422532457967,
+        "similarity_ratio": 1.0034852574642645,
+        "mann_whitney_p": 0.14445917410038694,
         "n_within_pairs": 771,
         "n_between_pairs": 5899
       }
     },
     "eval_8_essential_genes": {
-      "run_date": "2026-01-14 16:49",
+      "run_date": "2026-01-15 21:07",
       "config": {
         "matched_genes": 4541,
         "train_genes": 3563,
