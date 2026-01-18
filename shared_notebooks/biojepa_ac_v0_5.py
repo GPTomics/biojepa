@@ -227,7 +227,7 @@ class CellStateEncoderConfig:
     heads: int = 12
     embed_dim: int = 768
     mlp_ratio: float = 4.0 
-    gaussian_scale: float = 3.0
+    gaussian_scale: float = 2.0
 
 class CellStateEncoder(nn.Module):
     def __init__(self, config):
@@ -259,7 +259,7 @@ class CellStateEncoder(nn.Module):
 
         # Initiation 
         self.apply(init_weights_robust)
-        nn.init.constant_(self.linear_scaler.weight, 1.5)
+        nn.init.constant_(self.linear_scaler.weight, 1.25)
         nn.init.constant_(self.fourier_input_scaler.weight, 0.1)
         nn.init.zeros_(self.film_generator[-1].weight)
         nn.init.zeros_(self.film_generator[-1].bias)
