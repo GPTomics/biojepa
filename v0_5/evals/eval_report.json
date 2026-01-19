@@ -2,127 +2,127 @@
   "version": "v0.5",
   "evals": {
     "eval_1_expression_prediction": {
-      "run_date": "2026-01-17 21:13",
+      "run_date": "2026-01-18 09:24",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "test_samples": 38816
       },
       "sample_level": {
-        "mse": 0.5735726952552795,
-        "pearson_r_top20": 0.8181276917457581
+        "mse": 0.632931113243103,
+        "pearson_r_top20": 0.7370090484619141
       },
       "perturbation_level": {
         "r2_all_genes": {
-          "mean": 0.8697172595070792,
-          "median": 0.8861368894577026
+          "mean": 0.7614094675420882,
+          "median": 0.7772294878959656
         },
         "r2_top50_degs": {
-          "mean": -0.7804209381550342,
-          "median": -0.2984236478805542
+          "mean": -1.1628994522811649,
+          "median": -0.7796210050582886
         },
         "mse": {
-          "mean": 0.042388059198856354,
-          "median": 0.03625347092747688
+          "mean": 0.07523781806230545,
+          "median": 0.06925760209560394
         }
       },
       "severity": {
-        "pearson_r": 0.8362528681755066,
-        "spearman_r": 0.4379751185912931
+        "pearson_r": 0.8033065795898438,
+        "spearman_r": 0.35903788124584013
       },
       "error_by_magnitude": {
         "0-0.25": {
-          "mae": 0.13112390041351318,
-          "count": 1324754
+          "mae": 0.15779301524162292,
+          "count": 1324767
         },
         "0.25-0.5": {
-          "mae": 0.3124082684516907,
-          "count": 93598
+          "mae": 0.33779534697532654,
+          "count": 93586
         },
         "0.5-1.0": {
-          "mae": 0.6064110994338989,
-          "count": 9595
+          "mae": 0.6178910732269287,
+          "count": 9594
         },
         "1.0-1.5": {
-          "mae": 0.613681972026825,
+          "mae": 0.9208208918571472,
           "count": 957
         },
         "1.5-2.0": {
-          "mae": 1.2116650342941284,
+          "mae": 1.2480720281600952,
           "count": 991
         },
         "2.0+": {
-          "mae": 1.7552099227905273,
+          "mae": 1.8322272300720215,
           "count": 105
         }
       }
     },
     "eval_2_gene_level_analysis": {
-      "run_date": "2026-01-17 21:14",
+      "run_date": "2026-01-18 09:24",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "direction_threshold": 0.25
       },
       "direction_of_effect": {
-        "all_genes_accuracy": 0.8283216783216784,
-        "top50_degs_accuracy": 0.20965034965034965,
+        "all_genes_accuracy": 0.8204132867132867,
+        "top50_degs_accuracy": 0.1555944055944056,
         "accuracy_by_magnitude": {
           "0-0.25": {
-            "accuracy": 0.8813412449737659,
-            "count": 1324799
+            "accuracy": 0.8761464773422107,
+            "count": 1324710
           },
           "0.25-0.5": {
-            "accuracy": 0.14705976674826557,
-            "count": 93547
+            "accuracy": 0.10356318892591643,
+            "count": 93624
           },
           "0.5-1.0": {
-            "accuracy": 0.17539839600041662,
-            "count": 9601
+            "accuracy": 0.14563611775720378,
+            "count": 9613
           },
           "1.0-1.5": {
-            "accuracy": 0.7554858934169278,
+            "accuracy": 0.6718913270637409,
             "count": 957
           },
           "1.5-2.0": {
-            "accuracy": 0.6821392532795156,
+            "accuracy": 0.7658930373360242,
             "count": 991
           },
           "2.0+": {
-            "accuracy": 0.5714285714285714,
+            "accuracy": 0.5047619047619047,
             "count": 105
           }
         }
       },
       "top_deg_recovery": {
         "10": {
-          "precision": 0.008041958041958043,
-          "ndcg": 0.008668136882968322,
-          "overlap": 0.08041958041958042,
-          "vs_random": 4.020979020979021
+          "precision": 0.0010489510489510492,
+          "ndcg": 0.0009049293321315133,
+          "overlap": 0.01048951048951049,
+          "vs_random": 0.5244755244755245
         },
         "20": {
-          "precision": 0.015209790209790212,
-          "ndcg": 0.01674738548875196,
-          "overlap": 0.3041958041958042,
-          "vs_random": 3.8024475524475525
+          "precision": 0.0013986013986013986,
+          "ndcg": 0.0013013252393024996,
+          "overlap": 0.027972027972027972,
+          "vs_random": 0.34965034965034963
         },
         "50": {
-          "precision": 0.04111888111888112,
-          "ndcg": 0.0412322133519137,
-          "overlap": 2.055944055944056,
-          "vs_random": 4.111888111888112
+          "precision": 0.008741258741258742,
+          "ndcg": 0.009270419860393588,
+          "overlap": 0.4370629370629371,
+          "vs_random": 0.8741258741258742
         },
         "100": {
-          "precision": 0.07031468531468531,
-          "ndcg": 0.07247289273277183,
-          "overlap": 7.031468531468532,
-          "vs_random": 3.515734265734266
+          "precision": 0.0313986013986014,
+          "ndcg": 0.030196505997382647,
+          "overlap": 3.13986013986014,
+          "vs_random": 1.56993006993007
         }
       }
     },
     "eval_3_perturbation_retrieval": {
-      "run_date": "2026-01-17 21:30",
+      "run_date": "2026-01-18 09:34",
       "config": {
         "test_perturbations_evaluated": 100,
         "total_perturbations_in_bank": 1250,
@@ -130,9 +130,9 @@
         "similarity_metric": "cosine"
       },
       "metrics": {
-        "mrr": 0.0043775178729497065,
-        "median_rank": 678.0,
-        "mean_rank": 646.2
+        "mrr": 0.008690047923427445,
+        "median_rank": 755.0,
+        "mean_rank": 692.45
       },
       "recall_at_k": {
         "1": {
@@ -140,25 +140,25 @@
           "vs_random": 0.0
         },
         "5": {
-          "recall": 0.0,
-          "vs_random": 0.0
+          "recall": 0.02,
+          "vs_random": 5.0
         },
         "10": {
-          "recall": 0.01,
-          "vs_random": 1.25
+          "recall": 0.02,
+          "vs_random": 2.5
         },
         "20": {
-          "recall": 0.01,
-          "vs_random": 0.625
+          "recall": 0.03,
+          "vs_random": 1.875
         },
         "50": {
-          "recall": 0.03,
-          "vs_random": 0.75
+          "recall": 0.04,
+          "vs_random": 1.0
         }
       }
     },
     "eval_5_batch_invariance": {
-      "run_date": "2026-01-17 21:19",
+      "run_date": "2026-01-18 09:28",
       "config": {
         "samples": 38816,
         "embedding_dim": 8,
@@ -166,53 +166,53 @@
         "num_perturbations": 286
       },
       "batch_classifier": {
-        "accuracy": 0.02962390520350335,
+        "accuracy": 0.021638330757341576,
         "chance": 0.020833333333333332,
-        "above_chance_ratio": 1.4219474497681608
+        "above_chance_ratio": 1.0386398763523956
       },
       "perturbation_classifier": {
-        "accuracy": 0.011463163317877383,
+        "accuracy": 0.01300875837197321,
         "chance": 0.0034965034965034965,
-        "above_chance_ratio": 3.2784647089129315
+        "above_chance_ratio": 3.720504894384338
       },
-      "invariance_ratio": 0.3869565217391304
+      "invariance_ratio": 0.6011904761904762
     },
     "eval_4_uncertainty_calibration": {
-      "run_date": "2026-01-17 21:26",
+      "run_date": "2026-01-18 09:24",
       "config": {
         "samples": 38816,
         "perturbations": 286
       },
       "sample_level": {
-        "uncertainty_error_pearson": -0.12894001603126526,
-        "uncertainty_error_spearman": -0.09589979600727466,
-        "expected_calibration_error": 0.38131244737510583,
-        "monotonicity_score": 0.2222222222222222
+        "uncertainty_error_pearson": 0.006082613952457905,
+        "uncertainty_error_spearman": 0.0012074677112010792,
+        "expected_calibration_error": 0.08505627726222352,
+        "monotonicity_score": 0.4444444444444444
       },
       "perturbation_level": {
-        "uncertainty_error_pearson": -0.017006466165184975,
-        "uncertainty_error_spearman": -0.01841932137182458
+        "uncertainty_error_pearson": 0.05524162948131561,
+        "uncertainty_error_spearman": -0.007877360123829957
       },
       "bin_analysis": {
         "n_bins": 10,
         "bin_mean_errors": [
-          0.6290231347084045,
-          0.5815774202346802,
-          0.5786565542221069,
-          0.5704705119132996,
-          0.5665335655212402,
-          0.5617945194244385,
-          0.5641804337501526,
-          0.5610033273696899,
-          0.56273353099823,
-          0.5595915913581848
+          0.6362656950950623,
+          0.6344470381736755,
+          0.6307372450828552,
+          0.6322105526924133,
+          0.6330427527427673,
+          0.6312513947486877,
+          0.633746862411499,
+          0.6306982636451721,
+          0.6272406578063965,
+          0.6396239995956421
         ],
         "bin_counts": [
           3882,
           3881,
           3882,
-          3881,
-          3882,
+          3880,
+          3883,
           3881,
           3882,
           3881,
@@ -222,7 +222,7 @@
       }
     },
     "eval_6_embedding_pathways": {
-      "run_date": "2026-01-17 21:16",
+      "run_date": "2026-01-18 09:25",
       "config": {
         "n_genes": 5000,
         "n_perturbations": 1250,
@@ -233,29 +233,29 @@
       },
       "gene_embeddings": {
         "kegg": {
-          "silhouette_score": -0.22208061814308167,
-          "knn_accuracy": 0.2807017543859649,
+          "silhouette_score": -0.19623467326164246,
+          "knn_accuracy": 0.2956140350877193,
           "n_classes": 54,
           "n_samples": 1140
         },
         "reactome": {
-          "silhouette_score": -0.2702140510082245,
-          "knn_accuracy": 0.2657035175879397,
+          "silhouette_score": -0.21772947907447815,
+          "knn_accuracy": 0.2770100502512563,
           "n_classes": 73,
           "n_samples": 1592
         }
       },
       "action_vectors": {
         "kegg": {
-          "silhouette_score": -0.4122755825519562,
-          "knn_accuracy": 0.37281553398058254,
+          "silhouette_score": -0.41235047578811646,
+          "knn_accuracy": 0.3359223300970874,
           "n_classes": 27,
           "n_samples": 515
         }
       }
     },
     "eval_8_essential_genes": {
-      "run_date": "2026-01-17 21:16",
+      "run_date": "2026-01-18 09:25",
       "config": {
         "matched_genes": 4541,
         "train_genes": 3563,
@@ -264,20 +264,20 @@
         "depmap_source": "depmap-downloader (latest)"
       },
       "regression": {
-        "pearson_train": 0.263111786379784,
-        "pearson_test": 0.2141985691747805,
-        "spearman_train": 0.16858088576412839,
-        "spearman_test": 0.1678496728932563
+        "pearson_train": 0.19869436472915353,
+        "pearson_test": 0.1254999189223619,
+        "spearman_train": 0.13397785931048012,
+        "spearman_test": 0.08629649817738697
       },
       "classification": {
-        "auroc_train": 0.6332185753209686,
-        "auroc_test": 0.6265358781127129,
+        "auroc_train": 0.6223105652956893,
+        "auroc_test": 0.592685124508519,
         "n_essential_test": 128,
         "n_non_essential_test": 763
       }
     },
     "eval_7_moa_matching": {
-      "run_date": "2026-01-17 21:27",
+      "run_date": "2026-01-18 09:31",
       "config": {
         "n_pathways": 13,
         "n_perturbations": 116,
@@ -288,14 +288,14 @@
         ]
       },
       "similarity": {
-        "mean_within_pathway": 0.851596817631829,
-        "mean_between_pathway": 0.8506673698360983,
-        "similarity_ratio": 1.0010926101419757,
-        "mann_whitney_p": 0.19923390657444,
+        "mean_within_pathway": 0.9472672656786184,
+        "mean_between_pathway": 0.9459945386159659,
+        "similarity_ratio": 1.0013453852117524,
+        "mann_whitney_p": 0.054783432720551015,
         "n_within_pairs": 771,
         "n_between_pairs": 5899
       }
     }
   },
-  "last_updated": "2026-01-17 21:30"
+  "last_updated": "2026-01-18 09:34"
 }

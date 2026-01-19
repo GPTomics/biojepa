@@ -259,7 +259,7 @@ class CellStateEncoder(nn.Module):
 
         # Initiation 
         self.apply(init_weights_robust)
-        nn.init.constant_(self.linear_scaler.weight, 0.75)
+        nn.init.constant_(self.linear_scaler.weight, 1.0)
         nn.init.constant_(self.fourier_input_scaler.weight, 0.1)
         nn.init.zeros_(self.film_generator[-1].weight)
         nn.init.zeros_(self.film_generator[-1].bias)
@@ -381,8 +381,8 @@ class BioJepaConfig:
     mask_ratio: float = 0.6
 
     # Loss weights
-    sim_coeff: float = 25.0
-    std_coeff: float = 25.0
+    sim_coeff: float = 15.0
+    std_coeff: float = 10.0
     cov_coeff: float = 1.0
 
     #Perturb Configs
