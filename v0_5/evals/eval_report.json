@@ -2,127 +2,127 @@
   "version": "v0.5",
   "evals": {
     "eval_1_expression_prediction": {
-      "run_date": "2026-01-18 09:24",
+      "run_date": "2026-01-19 11:12",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "test_samples": 38816
       },
       "sample_level": {
-        "mse": 0.632931113243103,
-        "pearson_r_top20": 0.7370090484619141
+        "mse": 0.6189106106758118,
+        "pearson_r_top20": 0.7288712859153748
       },
       "perturbation_level": {
         "r2_all_genes": {
-          "mean": 0.7614094675420882,
-          "median": 0.7772294878959656
+          "mean": 0.7208297040079024,
+          "median": 0.7321328520774841
         },
         "r2_top50_degs": {
-          "mean": -1.1628994522811649,
-          "median": -0.7796210050582886
+          "mean": -1.1312292118172544,
+          "median": -0.7501142024993896
         },
         "mse": {
-          "mean": 0.07523781806230545,
-          "median": 0.06925760209560394
+          "mean": 0.08878833800554276,
+          "median": 0.08365385234355927
         }
       },
       "severity": {
-        "pearson_r": 0.8033065795898438,
-        "spearman_r": 0.35903788124584013
+        "pearson_r": 0.8405678868293762,
+        "spearman_r": 0.44924959507757967
       },
       "error_by_magnitude": {
         "0-0.25": {
-          "mae": 0.15779301524162292,
-          "count": 1324767
+          "mae": 0.1580776572227478,
+          "count": 1324770
         },
         "0.25-0.5": {
-          "mae": 0.33779534697532654,
-          "count": 93586
+          "mae": 0.33647188544273376,
+          "count": 93574
         },
         "0.5-1.0": {
-          "mae": 0.6178910732269287,
-          "count": 9594
+          "mae": 0.5824328064918518,
+          "count": 9602
         },
         "1.0-1.5": {
-          "mae": 0.9208208918571472,
-          "count": 957
+          "mae": 0.8625062704086304,
+          "count": 958
         },
         "1.5-2.0": {
-          "mae": 1.2480720281600952,
+          "mae": 1.272283673286438,
           "count": 991
         },
         "2.0+": {
-          "mae": 1.8322272300720215,
+          "mae": 1.6411210298538208,
           "count": 105
         }
       }
     },
     "eval_2_gene_level_analysis": {
-      "run_date": "2026-01-18 09:24",
+      "run_date": "2026-01-19 11:12",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "direction_threshold": 0.25
       },
       "direction_of_effect": {
-        "all_genes_accuracy": 0.8204132867132867,
-        "top50_degs_accuracy": 0.1555944055944056,
+        "all_genes_accuracy": 0.827348951048951,
+        "top50_degs_accuracy": 0.22006993006993006,
         "accuracy_by_magnitude": {
           "0-0.25": {
-            "accuracy": 0.8761464773422107,
-            "count": 1324710
+            "accuracy": 0.880194190734798,
+            "count": 1324677
           },
           "0.25-0.5": {
-            "accuracy": 0.10356318892591643,
-            "count": 93624
+            "accuracy": 0.14619483390105606,
+            "count": 93649
           },
           "0.5-1.0": {
-            "accuracy": 0.14563611775720378,
-            "count": 9613
+            "accuracy": 0.2164016214530714,
+            "count": 9621
           },
           "1.0-1.5": {
-            "accuracy": 0.6718913270637409,
+            "accuracy": 0.7178683385579937,
             "count": 957
           },
           "1.5-2.0": {
-            "accuracy": 0.7658930373360242,
+            "accuracy": 0.6094853683148335,
             "count": 991
           },
           "2.0+": {
-            "accuracy": 0.5047619047619047,
+            "accuracy": 0.6857142857142857,
             "count": 105
           }
         }
       },
       "top_deg_recovery": {
         "10": {
-          "precision": 0.0010489510489510492,
-          "ndcg": 0.0009049293321315133,
-          "overlap": 0.01048951048951049,
-          "vs_random": 0.5244755244755245
+          "precision": 0.002797202797202797,
+          "ndcg": 0.0023234778110823714,
+          "overlap": 0.027972027972027972,
+          "vs_random": 1.3986013986013985
         },
         "20": {
-          "precision": 0.0013986013986013986,
-          "ndcg": 0.0013013252393024996,
-          "overlap": 0.027972027972027972,
-          "vs_random": 0.34965034965034963
+          "precision": 0.008041958041958041,
+          "ndcg": 0.0069961765437553496,
+          "overlap": 0.16083916083916083,
+          "vs_random": 2.0104895104895104
         },
         "50": {
-          "precision": 0.008741258741258742,
-          "ndcg": 0.009270419860393588,
-          "overlap": 0.4370629370629371,
-          "vs_random": 0.8741258741258742
+          "precision": 0.01993006993006993,
+          "ndcg": 0.018827979731541284,
+          "overlap": 0.9965034965034965,
+          "vs_random": 1.993006993006993
         },
         "100": {
-          "precision": 0.0313986013986014,
-          "ndcg": 0.030196505997382647,
-          "overlap": 3.13986013986014,
-          "vs_random": 1.56993006993007
+          "precision": 0.04615384615384615,
+          "ndcg": 0.04313576293812771,
+          "overlap": 4.615384615384615,
+          "vs_random": 2.3076923076923075
         }
       }
     },
     "eval_3_perturbation_retrieval": {
-      "run_date": "2026-01-18 09:34",
+      "run_date": "2026-01-19 11:28",
       "config": {
         "test_perturbations_evaluated": 100,
         "total_perturbations_in_bank": 1250,
@@ -130,9 +130,9 @@
         "similarity_metric": "cosine"
       },
       "metrics": {
-        "mrr": 0.008690047923427445,
-        "median_rank": 755.0,
-        "mean_rank": 692.45
+        "mrr": 0.004054186929433922,
+        "median_rank": 619.0,
+        "mean_rank": 616.66
       },
       "recall_at_k": {
         "1": {
@@ -140,25 +140,25 @@
           "vs_random": 0.0
         },
         "5": {
-          "recall": 0.02,
-          "vs_random": 5.0
+          "recall": 0.0,
+          "vs_random": 0.0
         },
         "10": {
-          "recall": 0.02,
-          "vs_random": 2.5
+          "recall": 0.01,
+          "vs_random": 1.25
         },
         "20": {
-          "recall": 0.03,
-          "vs_random": 1.875
+          "recall": 0.01,
+          "vs_random": 0.625
         },
         "50": {
-          "recall": 0.04,
-          "vs_random": 1.0
+          "recall": 0.02,
+          "vs_random": 0.5
         }
       }
     },
     "eval_5_batch_invariance": {
-      "run_date": "2026-01-18 09:28",
+      "run_date": "2026-01-19 11:20",
       "config": {
         "samples": 38816,
         "embedding_dim": 8,
@@ -166,63 +166,63 @@
         "num_perturbations": 286
       },
       "batch_classifier": {
-        "accuracy": 0.021638330757341576,
+        "accuracy": 0.02241112828438949,
         "chance": 0.020833333333333332,
-        "above_chance_ratio": 1.0386398763523956
+        "above_chance_ratio": 1.0757341576506956
       },
       "perturbation_classifier": {
-        "accuracy": 0.01300875837197321,
+        "accuracy": 0.012235960844925297,
         "chance": 0.0034965034965034965,
-        "above_chance_ratio": 3.720504894384338
+        "above_chance_ratio": 3.499484801648635
       },
-      "invariance_ratio": 0.6011904761904762
+      "invariance_ratio": 0.5459770114942529
     },
     "eval_4_uncertainty_calibration": {
-      "run_date": "2026-01-18 09:24",
+      "run_date": "2026-01-19 11:26",
       "config": {
         "samples": 38816,
         "perturbations": 286
       },
       "sample_level": {
-        "uncertainty_error_pearson": 0.006082613952457905,
-        "uncertainty_error_spearman": 0.0012074677112010792,
-        "expected_calibration_error": 0.08505627726222352,
+        "uncertainty_error_pearson": 0.06957116723060608,
+        "uncertainty_error_spearman": 0.04495646364232392,
+        "expected_calibration_error": 0.11615883916622582,
         "monotonicity_score": 0.4444444444444444
       },
       "perturbation_level": {
-        "uncertainty_error_pearson": 0.05524162948131561,
-        "uncertainty_error_spearman": -0.007877360123829957
+        "uncertainty_error_pearson": 0.010316651314496994,
+        "uncertainty_error_spearman": -0.031108557681086557
       },
       "bin_analysis": {
         "n_bins": 10,
         "bin_mean_errors": [
-          0.6362656950950623,
-          0.6344470381736755,
-          0.6307372450828552,
-          0.6322105526924133,
-          0.6330427527427673,
-          0.6312513947486877,
-          0.633746862411499,
-          0.6306982636451721,
-          0.6272406578063965,
-          0.6396239995956421
+          0.6182801127433777,
+          0.6160081028938293,
+          0.6147003173828125,
+          0.6116355061531067,
+          0.6137299537658691,
+          0.6131771206855774,
+          0.6145010590553284,
+          0.6135129928588867,
+          0.6241142153739929,
+          0.6494250297546387
         ],
         "bin_counts": [
           3882,
           3881,
           3882,
-          3880,
-          3883,
           3881,
           3882,
           3881,
+          3880,
+          3883,
           3882,
           3882
         ]
       }
     },
     "eval_6_embedding_pathways": {
-      "run_date": "2026-01-18 09:25",
+      "run_date": "2026-01-19 11:15",
       "config": {
         "n_genes": 5000,
         "n_perturbations": 1250,
@@ -233,29 +233,29 @@
       },
       "gene_embeddings": {
         "kegg": {
-          "silhouette_score": -0.19623467326164246,
-          "knn_accuracy": 0.2956140350877193,
+          "silhouette_score": -0.24241948127746582,
+          "knn_accuracy": 0.2719298245614035,
           "n_classes": 54,
           "n_samples": 1140
         },
         "reactome": {
-          "silhouette_score": -0.21772947907447815,
-          "knn_accuracy": 0.2770100502512563,
+          "silhouette_score": -0.21430793404579163,
+          "knn_accuracy": 0.25690954773869346,
           "n_classes": 73,
           "n_samples": 1592
         }
       },
       "action_vectors": {
         "kegg": {
-          "silhouette_score": -0.41235047578811646,
-          "knn_accuracy": 0.3359223300970874,
+          "silhouette_score": -0.4122248589992523,
+          "knn_accuracy": 0.3864077669902913,
           "n_classes": 27,
           "n_samples": 515
         }
       }
     },
     "eval_8_essential_genes": {
-      "run_date": "2026-01-18 09:25",
+      "run_date": "2026-01-19 11:15",
       "config": {
         "matched_genes": 4541,
         "train_genes": 3563,
@@ -264,20 +264,20 @@
         "depmap_source": "depmap-downloader (latest)"
       },
       "regression": {
-        "pearson_train": 0.19869436472915353,
-        "pearson_test": 0.1254999189223619,
-        "spearman_train": 0.13397785931048012,
-        "spearman_test": 0.08629649817738697
+        "pearson_train": -0.000730208202321293,
+        "pearson_test": -0.023469442398340028,
+        "spearman_train": 0.0016957548650985454,
+        "spearman_test": -0.00907891497905102
       },
       "classification": {
-        "auroc_train": 0.6223105652956893,
-        "auroc_test": 0.592685124508519,
+        "auroc_train": 0.5117475491695791,
+        "auroc_test": 0.48829660878112713,
         "n_essential_test": 128,
         "n_non_essential_test": 763
       }
     },
     "eval_7_moa_matching": {
-      "run_date": "2026-01-18 09:31",
+      "run_date": "2026-01-19 11:26",
       "config": {
         "n_pathways": 13,
         "n_perturbations": 116,
@@ -288,14 +288,14 @@
         ]
       },
       "similarity": {
-        "mean_within_pathway": 0.9472672656786184,
-        "mean_between_pathway": 0.9459945386159659,
-        "similarity_ratio": 1.0013453852117524,
-        "mann_whitney_p": 0.054783432720551015,
+        "mean_within_pathway": 0.9657605952440369,
+        "mean_between_pathway": 0.964659866052775,
+        "similarity_ratio": 1.0011410541995138,
+        "mann_whitney_p": 0.1464350091281721,
         "n_within_pairs": 771,
         "n_between_pairs": 5899
       }
     }
   },
-  "last_updated": "2026-01-18 09:34"
+  "last_updated": "2026-01-19 11:28"
 }

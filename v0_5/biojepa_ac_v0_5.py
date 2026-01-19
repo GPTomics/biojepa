@@ -381,8 +381,8 @@ class BioJepaConfig:
     mask_ratio: float = 0.6
 
     # Loss weights
-    sim_coeff: float = 15.0
-    std_coeff: float = 10.0
+    sim_coeff: float = 25.0
+    std_coeff: float = 25.0
     cov_coeff: float = 1.0
 
     #Perturb Configs
