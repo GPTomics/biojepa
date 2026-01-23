@@ -2,127 +2,127 @@
   "version": "v0.5",
   "evals": {
     "eval_1_expression_prediction": {
-      "run_date": "2026-01-19 22:46",
+      "run_date": "2026-01-20 17:06",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "test_samples": 38816
       },
       "sample_level": {
-        "mse": 0.5688155293464661,
-        "pearson_r_top20": 0.8392297625541687
+        "mse": 0.672295093536377,
+        "pearson_r_top20": 0.7053958773612976
       },
       "perturbation_level": {
         "r2_all_genes": {
-          "mean": 0.883090820762661,
-          "median": 0.897043913602829
+          "mean": 0.7953603088438927,
+          "median": 0.8061543405056
         },
         "r2_top50_degs": {
-          "mean": -0.3990751604933839,
-          "median": -0.028651297092437744
+          "mean": -0.708570044149052,
+          "median": -0.39561617374420166
         },
         "mse": {
-          "mean": 0.037827592343091965,
-          "median": 0.03231138363480568
+          "mean": 0.0930231437087059,
+          "median": 0.08827448636293411
         }
       },
       "severity": {
-        "pearson_r": 0.8582134246826172,
-        "spearman_r": 0.5141438792273195
+        "pearson_r": 0.8477119207382202,
+        "spearman_r": 0.4751523187980184
       },
       "error_by_magnitude": {
         "0-0.25": {
-          "mae": 0.12710127234458923,
-          "count": 1324760
+          "mae": 0.1706407517194748,
+          "count": 1324771
         },
         "0.25-0.5": {
-          "mae": 0.2804788649082184,
-          "count": 93566
+          "mae": 0.33798009157180786,
+          "count": 93569
         },
         "0.5-1.0": {
-          "mae": 0.5327341556549072,
-          "count": 9621
+          "mae": 0.5766380429267883,
+          "count": 9607
         },
         "1.0-1.5": {
-          "mae": 0.7550029754638672,
+          "mae": 0.9711479544639587,
           "count": 957
         },
         "1.5-2.0": {
-          "mae": 1.0835357904434204,
+          "mae": 1.3771445751190186,
           "count": 991
         },
         "2.0+": {
-          "mae": 1.5875574350357056,
+          "mae": 1.8194856643676758,
           "count": 105
         }
       }
     },
     "eval_2_gene_level_analysis": {
-      "run_date": "2026-01-19 22:46",
+      "run_date": "2026-01-20 17:06",
       "config": {
         "test_perturbations": 286,
         "genes": 5000,
         "direction_threshold": 0.25
       },
       "direction_of_effect": {
-        "all_genes_accuracy": 0.8374685314685315,
-        "top50_degs_accuracy": 0.20776223776223776,
+        "all_genes_accuracy": 0.7972153846153847,
+        "top50_degs_accuracy": 0.19972027972027973,
         "accuracy_by_magnitude": {
           "0-0.25": {
-            "accuracy": 0.8910676516012735,
-            "count": 1324758
+            "accuracy": 0.8487053562666916,
+            "count": 1324766
           },
           "0.25-0.5": {
-            "accuracy": 0.1455804411010429,
-            "count": 93584
+            "accuracy": 0.13798593746660684,
+            "count": 93582
           },
           "0.5-1.0": {
-            "accuracy": 0.1903175429463821,
-            "count": 9605
+            "accuracy": 0.17418481091780394,
+            "count": 9599
           },
           "1.0-1.5": {
-            "accuracy": 0.7826541274817137,
+            "accuracy": 0.5882967607105538,
             "count": 957
           },
           "1.5-2.0": {
-            "accuracy": 0.8506559031281534,
+            "accuracy": 0.4843592330978809,
             "count": 991
           },
           "2.0+": {
-            "accuracy": 0.8285714285714286,
+            "accuracy": 0.5142857142857142,
             "count": 105
           }
         }
       },
       "top_deg_recovery": {
         "10": {
-          "precision": 0.015734265734265736,
-          "ndcg": 0.0171258310688976,
-          "overlap": 0.15734265734265734,
-          "vs_random": 7.867132867132867
+          "precision": 0.006643356643356644,
+          "ndcg": 0.009428065948451858,
+          "overlap": 0.06643356643356643,
+          "vs_random": 3.3216783216783217
         },
         "20": {
-          "precision": 0.02062937062937063,
-          "ndcg": 0.025947348301629546,
-          "overlap": 0.4125874125874126,
-          "vs_random": 5.1573426573426575
+          "precision": 0.010664335664335665,
+          "ndcg": 0.015177049511271601,
+          "overlap": 0.21328671328671328,
+          "vs_random": 2.666083916083916
         },
         "50": {
-          "precision": 0.03132867132867133,
-          "ndcg": 0.040599024816401395,
-          "overlap": 1.5664335664335665,
-          "vs_random": 3.132867132867133
+          "precision": 0.014895104895104894,
+          "ndcg": 0.02186648463300297,
+          "overlap": 0.7447552447552448,
+          "vs_random": 1.4895104895104896
         },
         "100": {
-          "precision": 0.045734265734265735,
-          "ndcg": 0.05746011805963091,
-          "overlap": 4.573426573426573,
-          "vs_random": 2.2867132867132867
+          "precision": 0.03122377622377622,
+          "ndcg": 0.03950934588168083,
+          "overlap": 3.1223776223776225,
+          "vs_random": 1.5611888111888113
         }
       }
     },
     "eval_3_perturbation_retrieval": {
-      "run_date": "2026-01-19 22:57",
+      "run_date": "2026-01-20 17:20",
       "config": {
         "test_perturbations_evaluated": 100,
         "total_perturbations_in_bank": 1250,
@@ -130,9 +130,9 @@
         "similarity_metric": "cosine"
       },
       "metrics": {
-        "mrr": 0.0050024471058927366,
-        "median_rank": 557.0,
-        "mean_rank": 575.59
+        "mrr": 0.0037640089284594006,
+        "median_rank": 845.5,
+        "mean_rank": 704.5
       },
       "recall_at_k": {
         "1": {
@@ -152,13 +152,13 @@
           "vs_random": 0.625
         },
         "50": {
-          "recall": 0.06,
-          "vs_random": 1.5
+          "recall": 0.03,
+          "vs_random": 0.75
         }
       }
     },
     "eval_5_batch_invariance": {
-      "run_date": "2026-01-19 22:59",
+      "run_date": "2026-01-20 17:12",
       "config": {
         "samples": 38816,
         "embedding_dim": 8,
@@ -166,54 +166,54 @@
         "num_perturbations": 286
       },
       "batch_classifier": {
-        "accuracy": 0.030911901081916538,
+        "accuracy": 0.02344152498712004,
         "chance": 0.020833333333333332,
-        "above_chance_ratio": 1.4837712519319939
+        "above_chance_ratio": 1.125193199381762
       },
       "perturbation_classifier": {
-        "accuracy": 0.01184956208140134,
+        "accuracy": 0.013781555899021122,
         "chance": 0.0034965034965034965,
-        "above_chance_ratio": 3.388974755280783
+        "above_chance_ratio": 3.941524987120041
       },
-      "invariance_ratio": 0.38333333333333336
+      "invariance_ratio": 0.5879120879120879
     },
     "eval_4_uncertainty_calibration": {
-      "run_date": "2026-01-19 23:04",
+      "run_date": "2026-01-20 17:08",
       "config": {
         "samples": 38816,
         "perturbations": 286
       },
       "sample_level": {
-        "uncertainty_error_pearson": -0.03937647119164467,
-        "uncertainty_error_spearman": -0.05353191166589302,
-        "expected_calibration_error": 0.41452582824786377,
-        "monotonicity_score": 0.3333333333333333
+        "uncertainty_error_pearson": -0.11149465292692184,
+        "uncertainty_error_spearman": -0.07894702532282666,
+        "expected_calibration_error": 0.28845054953553323,
+        "monotonicity_score": 0.4444444444444444
       },
       "perturbation_level": {
-        "uncertainty_error_pearson": -0.1543309986591339,
-        "uncertainty_error_spearman": -0.1277908227844043
+        "uncertainty_error_pearson": -0.1576056182384491,
+        "uncertainty_error_spearman": -0.1632926765147561
       },
       "bin_analysis": {
         "n_bins": 10,
         "bin_mean_errors": [
-          0.5879690051078796,
-          0.5821855664253235,
-          0.5742765665054321,
-          0.5581426024436951,
-          0.5568583607673645,
-          0.5632307529449463,
-          0.558371901512146,
-          0.5528357625007629,
-          0.5659955143928528,
-          0.5883653163909912
+          0.7107309699058533,
+          0.6909942030906677,
+          0.676158607006073,
+          0.6639031171798706,
+          0.6578256487846375,
+          0.655705988407135,
+          0.6574988961219788,
+          0.6618127226829529,
+          0.6677597165107727,
+          0.6807281374931335
         ],
         "bin_counts": [
           3882,
+          3880,
+          3883,
+          3881,
           3881,
           3882,
-          3881,
-          3882,
-          3881,
           3882,
           3881,
           3882,
@@ -222,7 +222,7 @@
       }
     },
     "eval_6_embedding_pathways": {
-      "run_date": "2026-01-19 22:57",
+      "run_date": "2026-01-20 17:04",
       "config": {
         "n_genes": 5000,
         "n_perturbations": 1250,
@@ -233,13 +233,13 @@
       },
       "gene_embeddings": {
         "kegg": {
-          "silhouette_score": -0.22681215405464172,
-          "knn_accuracy": 0.28771929824561404,
+          "silhouette_score": -0.21777229011058807,
+          "knn_accuracy": 0.2649122807017544,
           "n_classes": 54,
           "n_samples": 1140
         },
         "reactome": {
-          "silhouette_score": -0.25326216220855713,
+          "silhouette_score": -0.19681856036186218,
           "knn_accuracy": 0.24811557788944724,
           "n_classes": 73,
           "n_samples": 1592
@@ -247,15 +247,15 @@
       },
       "action_vectors": {
         "kegg": {
-          "silhouette_score": -0.41220614314079285,
-          "knn_accuracy": 0.3844660194174757,
+          "silhouette_score": -0.4121575653553009,
+          "knn_accuracy": 0.34951456310679613,
           "n_classes": 27,
           "n_samples": 515
         }
       }
     },
     "eval_8_essential_genes": {
-      "run_date": "2026-01-19 22:56",
+      "run_date": "2026-01-20 17:04",
       "config": {
         "matched_genes": 4541,
         "train_genes": 3563,
@@ -264,20 +264,20 @@
         "depmap_source": "depmap-downloader (latest)"
       },
       "regression": {
-        "pearson_train": 0.23531099069192002,
-        "pearson_test": 0.16160213760504855,
-        "spearman_train": 0.1324509619427426,
-        "spearman_test": 0.14801768885509498
+        "pearson_train": 0.18036467602958905,
+        "pearson_test": 0.10076626811734783,
+        "spearman_train": 0.1202676380190968,
+        "spearman_test": 0.08443177852660393
       },
       "classification": {
-        "auroc_train": 0.6195567929184769,
-        "auroc_test": 0.5935144986893841,
+        "auroc_train": 0.6101511950310321,
+        "auroc_test": 0.6010607798165137,
         "n_essential_test": 128,
         "n_non_essential_test": 763
       }
     },
     "eval_7_moa_matching": {
-      "run_date": "2026-01-19 23:04",
+      "run_date": "2026-01-20 17:14",
       "config": {
         "n_pathways": 13,
         "n_perturbations": 116,
@@ -288,14 +288,14 @@
         ]
       },
       "similarity": {
-        "mean_within_pathway": 0.8464294021189217,
-        "mean_between_pathway": 0.8405909505052694,
-        "similarity_ratio": 1.0069456512827586,
-        "mann_whitney_p": 0.004549702041996537,
+        "mean_within_pathway": 0.9742940995358612,
+        "mean_between_pathway": 0.973811668626601,
+        "similarity_ratio": 1.0004954047325605,
+        "mann_whitney_p": 0.3105042619917152,
         "n_within_pairs": 771,
         "n_between_pairs": 5899
       }
     }
   },
-  "last_updated": "2026-01-19 23:04"
+  "last_updated": "2026-01-20 17:20"
 }
