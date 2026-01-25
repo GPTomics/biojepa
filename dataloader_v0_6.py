@@ -130,8 +130,9 @@ class AlignmentLoader(_BaseShardLoader):
 
 
 class TrainingLoader(_BaseShardLoader):
-    def __init__(self, batch_size, split, data_dir, device, return_batch_id=False):
+    def __init__(self, batch_size, split, data_dir, device, return_batch_id=False, return_cell_type=False):
         self.return_batch_id = return_batch_id
+        self.return_cell_type = return_cell_type
         super().__init__(batch_size, split, data_dir, device)
 
     def load_file(self, filename):
@@ -145,9 +146,15 @@ class TrainingLoader(_BaseShardLoader):
             p_mod = data['pert_modality'].astype(np.int64)
             p_mode = data['pert_mode'].astype(np.int64)
 
+            result = [control_x, control_tot, case_x, case_tot, p_idx, p_mod, p_mode]
+
             if self.return_batch_id:
                 batch_id = data['batch_id'].astype(np.int64)
-                return control_x, control_tot, case_x, case_tot, p_idx, p_mod, p_mode, batch_id
+                result.append(batch_id)
 
-        return control_x, control_tot, case_x, case_tot, p_idx, p_mod, p_mode
+            if self.return_cell_type:
+                cell_type = data['cell_type'].astype(np.int64)
+                result.append(cell_type)
+
+        return tuple(result)
 

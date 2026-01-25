@@ -350,6 +350,170 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
+### cell_type_probing
+**Notebook**: `cell_type_probing.ipynb` (or via `evals.py`)
+
+**Biological question**: Does the encoder disentangle biological cell state from noise?
+
+**Setup**: Train logistic regression on cell embeddings (mean-pooled across genes) to predict cell type.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Accuracy | Fraction of correctly classified cells |
+| Macro F1 | F1 score averaged across cell types (handles class imbalance) |
+| Above Chance Ratio | Accuracy / (1 / n_cell_types) |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Accuracy | > 0.9 | 0.7 - 0.9 | < 0.7 | Depends on n_cell_types |
+| Macro F1 | > 0.8 | 0.5 - 0.8 | < 0.5 | More robust to class imbalance |
+| Above Chance | > 5x | 2-5x | < 2x | Higher = better separation |
+
+**Interpretation guide**:
+- High accuracy means the encoder preserves cell-type-specific biology
+- This is a prerequisite for cross-cell-type transfer learning
+- Low accuracy with good expression prediction suggests the encoder focuses on perturbation effects over cell state
+- Note: Requires multi-cell-type data. Returns early with error if only 1 cell type present.
+
+**Data requirements**: `cell_type` field in training shards, `cell_type_to_id.json` mapping.
+
+---
+
+### reconstruction
+**Notebook**: `reconstruction.ipynb` (or via `evals.py`)
+
+**Biological question**: Does the encoder preserve fine-grained expression information, or does VICReg wash it out?
+
+**Setup**: Train 1-layer MLP to reconstruct gene expression from per-gene embeddings. Use 80% of genes for training, 20% for testing reconstruction capability.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Reconstruction MSE | Mean squared error on held-out genes |
+| Pearson R | Correlation between predicted and true expression |
+| R² | Coefficient of determination |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Pearson R | > 0.8 | 0.5 - 0.8 | < 0.5 | Measures relative structure preservation |
+| R² | > 0.6 | 0.3 - 0.6 | < 0.3 | Measures absolute reconstruction quality |
+
+**Interpretation guide**:
+- High reconstruction = encoder preserves expression information
+- Low reconstruction with good downstream performance = encoder compresses to task-relevant features
+- Very low reconstruction is a red flag - embeddings may be degenerate
+- This is a sanity check for VICReg variance constraints not being too aggressive
+
+**Data requirements**: Existing data only.
+
+---
+
+### perturbation_detection
+**Notebook**: `perturbation_detection.ipynb` (or via `evals.py`)
+
+**Biological question**: Is the perturbation signal preserved in the latent space, or has VICReg washed it out as "noise"?
+
+**Setup**: Train binary classifier to distinguish control cell embeddings from perturbed cell embeddings.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| AUROC | Area under ROC curve for binary classification |
+| Accuracy | Fraction correctly classified |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| AUROC | > 0.7 | 0.55 - 0.7 | < 0.55 | 0.5 = random chance |
+| Accuracy | > 0.65 | 0.55 - 0.65 | < 0.55 | Chance = 0.5 |
+
+**Interpretation guide**:
+- High AUROC = perturbation effects survive encoding into latent space
+- Low AUROC = encoder treats perturbations as noise and removes them
+- This is critical: if perturbation signal is washed out, the action-conditioned predictor has nothing to work with
+- A good encoder should achieve AUROC > 0.6 while maintaining batch invariance
+
+**Data requirements**: Existing data only (uses control vs case embeddings).
+
+---
+
+### embedding_consistency
+**Notebook**: `embedding_consistency.ipynb` (or via `evals.py`)
+
+**Biological question**: Do replicates of the same perturbation cluster tightly in embedding space?
+
+**Setup**: Compute L2 distances between embeddings. Compare intra-perturbation distances (same perturbation, different replicates) vs inter-perturbation distances (different perturbations).
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Mean Intra Distance | Average L2 distance between replicates of same perturbation |
+| Mean Inter Distance | Average L2 distance between samples of different perturbations |
+| Inter/Intra Ratio | Inter-perturbation / Intra-perturbation distance (higher = better) |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Inter/Intra Ratio | > 2.0 | 1.5 - 2.0 | < 1.5 | Higher = tighter within-perturbation clusters |
+
+**Interpretation guide**:
+- Ratio > 2 means replicates are well-separated from other perturbations
+- Ratio near 1 means no meaningful clustering - embeddings are noisy or dominated by technical effects
+- Complements batch_invariance: that eval asks "can we classify?" while this asks "do replicates cluster?"
+- A model could have high classification accuracy but poor clustering if decision boundaries are messy
+
+**Data requirements**: Existing data only.
+
+---
+
+### latent_space_health
+**Notebook**: `latent_space_health.ipynb` (or via `evals.py`)
+
+**Biological question**: Is the embedding space well-structured? Are there degenerate or collapsed dimensions?
+
+**Setup**: Compute diagnostic statistics on the embedding space: PCA for dimensionality, variance per dimension, isotropy metrics.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Effective Dim (90%) | Number of PCA components for 90% explained variance |
+| Effective Dim (95%) | Number of PCA components for 95% explained variance |
+| Mean/Min/Max Variance | Per-dimension variance statistics |
+| N Dead Dims | Dimensions with variance < 1e-6 |
+| Isotropy Ratio | Min/Max eigenvalue ratio (higher = more uniform) |
+| Mean Cosine Sim | Average pairwise cosine similarity (lower = better spread) |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Effective Dim (90%) | 50-80% of D | 30-50% | < 30% or > 90% | Too low = collapsed, too high = no compression |
+| N Dead Dims | 0 | 1-5 | > 5 | Dead dims indicate VICReg failure |
+| Mean Cosine Sim | < 0.3 | 0.3 - 0.5 | > 0.5 | Low = good spread in space |
+
+**Interpretation guide**:
+- Dead dimensions indicate VICReg variance constraint is not working
+- Very low effective dimensionality suggests representation collapse
+- Very high effective dimensionality suggests no useful compression
+- High mean cosine similarity suggests embeddings are clustered in a small region (not using the full space)
+- This is a diagnostic eval - use it to debug training issues
+
+**Data requirements**: Existing data only.
+
+---
+
 ## Evaluations On Hold
 
 These evaluations require additional data or architectural changes and are not currently prioritized.
@@ -407,6 +571,11 @@ These evaluations require additional data or architectural changes and are not c
 | action_vector_pathways | Full | action_vector_pathways.ipynb | Pathway structure in action vectors | Silhouette, k-NN |
 | moa_matching | Full | moa_matching.ipynb | Same-pathway similarity | Within/between ratio |
 | essential_gene_prediction | Pretrain | essential_gene_prediction.ipynb | Functional importance in embeddings | Pearson r, AUROC |
+| cell_type_probing | Pretrain | evals.py | Cell state disentanglement | Macro F1, Accuracy |
+| reconstruction | Pretrain | evals.py | Information preservation | Pearson R, MSE |
+| perturbation_detection | Pretrain | evals.py | Perturbation signal survival | AUROC |
+| embedding_consistency | Pretrain | evals.py | Replicate clustering quality | Inter/Intra ratio |
+| latent_space_health | Pretrain | evals.py | VICReg training diagnostics | Effective dim, Isotropy |
 | cross_cell_type_transfer | - | - | Cross-cell-type transfer | On Hold |
 | synthetic_lethality_signal | - | - | Synthetic lethality detection | On Hold |
 
@@ -420,5 +589,7 @@ These evaluations require additional data or architectural changes and are not c
 | Batch labels (gem_group) | Added to shards | batch_invariance | Done |
 | KEGG/Reactome pathways | gseapy | gene_embedding_pathways, action_vector_pathways, moa_matching | Done |
 | DepMap K562 CRISPR | DepMap API | essential_gene_prediction | Done |
+| Cell type labels | Add to shards | cell_type_probing | Pending (v0.6) |
+| cell_type_to_id.json | Data prep | cell_type_probing | Pending (v0.6) |
 | Replogle RPE1 | GEARS/GEO | cross_cell_type_transfer | Pending |
 | SynLethDB | Public database | synthetic_lethality_signal | Pending |

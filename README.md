@@ -1,5 +1,5 @@
 **In progress version:**  v0.6
-## V0.4 Technical Report [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/biojepa_ac_v0_4_technical_report.pdf)
+## V0.4 Technical Report [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/docs/technical_report_v0_4.pdf)
 
 # bio-JEPA
 
@@ -41,25 +41,25 @@ Beyond therapeutics, the model's learned representations enable biological disco
 
 | Metric | v0.5 | v0.4 | v0.3 | v0.2 |
 | - | - | - | - | - |
-| **Global MSE** | 0.489 | 0.498 | 0.515 | 0.790 |
-| **Pearson R (Top 20)** | 0.919 | 0.927 | 0.921 | 0.605 |
-| **R² All (mean/median)** | 0.930 / 0.940 | 0.918 / 0.927 | 0.902 / 0.910 | 0.942 / 0.956 |
-| **R² Top 50 (mean/median)** | 0.066 / 0.341 | 0.096 / 0.325 | 0.060 / 0.255 | -0.027 / 0.269 |
-| Severity Correlation | 0.835 | 0.870 | — | — |
-| Direction Accuracy (All) | 89.7% | 87.7% | — | — |
-| Direction Accuracy (Top 50) | 28.5% | 34.0% | — | — |
-| DEG Precision@20 | 4.8% | 3.1% | — | — |
-| DEG vs Random | 12.0x | 7.8x | — | — |
-| Retrieval MRR | 0.007 | 0.010 | — | — |
-| Retrieval Recall@10 | 3.0% | 2.0% | — | — |
-| Uncertainty ECE | 0.281 | 0.135 | — | — |
-| Uncertainty Monotonicity | 0.56 | 0.78 | — | — |
-| Batch Invariance Ratio | 0.167 | 0.215 | — | — |
-| Pathway Gene k-NN | 30.7% | 27.4% | — | — |
-| Pathway Action k-NN | 41.0% | 37.9% | — | — |
-| MOA Similarity Ratio | 1.005 | 1.006 | — | — |
-| Essential AUROC | 0.741 | 0.707 | — | — |
-| Essential Pearson | 0.408 | 0.275 | — | — |
+| **Global MSE** | **0.489** | 0.498 | 0.515 | 0.790 |
+| **Pearson R (Top 20)** | 0.919 | **0.927** | 0.921 | 0.605 |
+| **R² All (mean/median)** | 0.930 / 0.940 | 0.918 / 0.927 | 0.902 / 0.910 | **0.942 / 0.956** |
+| **R² Top 50 (mean/median)** | 0.066 / **0.341** | **0.096** / 0.325 | 0.060 / 0.255 | -0.027 / 0.269 |
+| Severity Correlation | 0.835 | **0.870** | — | — |
+| Direction Accuracy (All) | **89.7%** | 87.7% | — | — |
+| Direction Accuracy (Top 50) | 28.5% | **34.0%** | — | — |
+| DEG Precision@20 | **4.8%** | 3.1% | — | — |
+| DEG vs Random | **12.0x** | 7.8x | — | — |
+| Retrieval MRR | 0.007 | **0.010** | — | — |
+| Retrieval Recall@10 | **3.0%** | 2.0% | — | — |
+| Uncertainty ECE | 0.281 | **0.135** | — | — |
+| Uncertainty Monotonicity | 0.56 | **0.78** | — | — |
+| Batch Invariance Ratio | 0.167 | **0.215** | — | — |
+| Pathway Gene k-NN | **30.7%** | 27.4% | — | — |
+| Pathway Action k-NN | **41.0%** | 37.9% | — | — |
+| MOA Similarity Ratio | 1.005 | **1.006** | — | — |
+| Essential AUROC | **0.741** | 0.707 | — | — |
+| Essential Pearson | **0.408** | 0.275 | — | — |
 
 v0.1 removed due to data leakage. Extended evals (rows without bold) available for v0.4+.
 

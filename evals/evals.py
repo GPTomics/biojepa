@@ -17,14 +17,15 @@ from tqdm import tqdm
 from collections import defaultdict
 from scipy.stats import pearsonr, spearmanr, mannwhitneyu
 from sklearn.metrics import r2_score, accuracy_score, roc_auc_score, f1_score
+from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
 
-import biojepa_ac_v0_6 as model
-from bio_dataloader import TrainingLoader
-from linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
-from pathway_utils import load_pathway_annotations, map_genes_to_pathways, compute_pathway_clustering_metrics
-from linear_classifier import train_linear_classifier
+import biojepa_v0_6 as model
+from dataloader_v0_6 import TrainingLoader
+from .linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
+from .pathway_utils import load_pathway_annotations, map_genes_to_pathways, compute_pathway_clustering_metrics
+from .linear_classifier import train_linear_classifier
 
 
 DEFAULT_CONFIG = {
@@ -220,6 +221,11 @@ def run_pretraining_evals(ctx):
         'batch_invariance': _batch_invariance(ctx),
         'gene_embedding_pathways': _gene_embedding_pathways(ctx),
         'essential_gene_prediction': _essential_gene_prediction(ctx),
+        'cell_type_probing': _cell_type_probing(ctx),
+        'reconstruction': _reconstruction(ctx),
+        'perturbation_detection': _perturbation_detection(ctx),
+        'embedding_consistency': _embedding_consistency(ctx),
+        'latent_space_health': _latent_space_health(ctx),
     }
 
 
@@ -356,6 +362,257 @@ def _essential_gene_prediction(ctx):
         'config': {'matched_genes': len(matched_idx), 'train_genes': len(X_train), 'test_genes': len(X_test)},
         'regression': {'pearson_test': float(pearson_test), 'spearman_test': float(spearman_test)},
         'classification': {'auroc_test': float(auroc_test), 'n_essential_test': int(y_test_bin.sum()), 'n_non_essential_test': int((~y_test_bin.astype(bool)).sum())}
+    }
+
+
+def _cell_type_probing(ctx):
+    '''Can cell type be predicted from cell embeddings?'''
+    try:
+        test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device, return_cell_type=True)
+    except KeyError:
+        return {'error': 'cell_type field not found in data shards'}
+
+    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+
+    all_emb, all_cell_type = [], []
+    with torch.no_grad():
+        for _ in tqdm(range(test_steps), desc='cell_type_probing: Extracting embeddings'):
+            batch = test_loader.next_batch()
+            cont_x, cont_tot = batch[0], batch[1]
+            cell_type = batch[-1]
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            all_emb.append(emb)
+            all_cell_type.append(cell_type.cpu().numpy())
+
+    embeddings = np.concatenate(all_emb, axis=0)
+    cell_types = np.concatenate(all_cell_type, axis=0).flatten()
+
+    unique_types = sorted(np.unique(cell_types))
+    type_map = {t: i for i, t in enumerate(unique_types)}
+    labels = np.array([type_map[t] for t in cell_types])
+    n_classes = len(type_map)
+
+    if n_classes < 2:
+        return {'error': 'Only one cell type in data - eval requires multi-cell-type data', 'config': {'num_cell_types': n_classes}}
+
+    train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=42, stratify=labels)
+
+    print('Training cell type classifier...')
+    _, val_preds, val_acc = train_linear_classifier(embeddings[train_idx], labels[train_idx], embeddings[val_idx], labels[val_idx], n_classes, ctx.device, epochs=100)
+
+    macro_f1 = f1_score(labels[val_idx], val_preds, average='macro')
+    chance = 1.0 / n_classes
+
+    print(f'cell_type_probing: Accuracy={val_acc:.4f} ({val_acc/chance:.1f}x chance), Macro F1={macro_f1:.4f}')
+
+    return {
+        'config': {'samples': len(embeddings), 'embedding_dim': int(embeddings.shape[1]), 'num_cell_types': n_classes},
+        'metrics': {'accuracy': float(val_acc), 'macro_f1': float(macro_f1), 'chance': float(chance), 'above_chance_ratio': float(val_acc / chance)}
+    }
+
+
+def _reconstruction(ctx):
+    '''Can gene expression be reconstructed from embeddings?'''
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+    n_genes = ctx.config['n_genes']
+
+    all_emb, all_expr = [], []
+    with torch.no_grad():
+        for _ in tqdm(range(test_steps), desc='reconstruction: Extracting embeddings'):
+            cont_x, cont_tot, _, _, _, _, _ = test_loader.next_batch()
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).cpu().numpy()
+            all_emb.append(emb)
+            all_expr.append(cont_x.cpu().numpy())
+
+    embeddings = np.concatenate(all_emb, axis=0)
+    expressions = np.concatenate(all_expr, axis=0)
+
+    n_samples = embeddings.shape[0]
+    gene_perm = np.random.RandomState(42).permutation(n_genes)
+    n_train_genes = int(0.8 * n_genes)
+    train_genes, test_genes = gene_perm[:n_train_genes], gene_perm[n_train_genes:]
+
+    X_train = embeddings[:, train_genes, :].reshape(-1, embeddings.shape[-1])
+    y_train = expressions[:, train_genes].reshape(-1)
+    X_test = embeddings[:, test_genes, :].reshape(-1, embeddings.shape[-1])
+    y_test = expressions[:, test_genes].reshape(-1)
+
+    class ReconMLP(nn.Module):
+        def __init__(self, d_in, d_hidden=64):
+            super().__init__()
+            self.net = nn.Sequential(nn.Linear(d_in, d_hidden), nn.ReLU(), nn.Linear(d_hidden, 1))
+        def forward(self, x):
+            return self.net(x).squeeze(-1)
+
+    mlp = ReconMLP(X_train.shape[1]).to(ctx.device)
+    opt = torch.optim.Adam(mlp.parameters(), lr=1e-3)
+
+    train_subset = np.random.RandomState(42).choice(len(X_train), min(100000, len(X_train)), replace=False)
+    X_t = torch.from_numpy(X_train[train_subset]).float().to(ctx.device)
+    y_t = torch.from_numpy(y_train[train_subset]).float().to(ctx.device)
+
+    print('Training reconstruction MLP...')
+    for _ in range(200):
+        opt.zero_grad()
+        nn.MSELoss()(mlp(X_t), y_t).backward()
+        opt.step()
+
+    mlp.eval()
+    with torch.no_grad():
+        test_subset = np.random.RandomState(42).choice(len(X_test), min(50000, len(X_test)), replace=False)
+        X_test_t = torch.from_numpy(X_test[test_subset]).float().to(ctx.device)
+        y_pred = mlp(X_test_t).cpu().numpy()
+        y_true = y_test[test_subset]
+
+    mse = np.mean((y_pred - y_true)**2)
+    pearson_r, _ = pearsonr(y_pred, y_true)
+
+    print(f'reconstruction: MSE={mse:.4f}, Pearson R={pearson_r:.4f}')
+
+    return {
+        'config': {'samples': n_samples, 'train_genes': len(train_genes), 'test_genes': len(test_genes), 'embedding_dim': int(embeddings.shape[-1])},
+        'metrics': {'reconstruction_mse': float(mse), 'pearson_r': float(pearson_r), 'pearson_r_squared': float(pearson_r**2)}
+    }
+
+
+def _perturbation_detection(ctx):
+    '''Can we distinguish perturbed cells from control cells?'''
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+
+    control_emb, case_emb = [], []
+    with torch.no_grad():
+        for _ in tqdm(range(test_steps), desc='perturbation_detection: Extracting embeddings'):
+            cont_x, cont_tot, case_x, case_tot, _, _, _ = test_loader.next_batch()
+            ctrl_z = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            control_emb.append(ctrl_z)
+            case_emb.append(case_z)
+
+    control_emb = np.concatenate(control_emb, axis=0)
+    case_emb = np.concatenate(case_emb, axis=0)
+
+    X = np.concatenate([control_emb, case_emb], axis=0)
+    y = np.concatenate([np.zeros(len(control_emb)), np.ones(len(case_emb))]).astype(int)
+
+    train_idx, val_idx = train_test_split(np.arange(len(X)), test_size=0.2, random_state=42, stratify=y)
+
+    print('Training perturbation detector...')
+    classifier, val_preds, val_acc = train_linear_classifier(X[train_idx], y[train_idx], X[val_idx], y[val_idx], num_classes=2, device=ctx.device, epochs=100)
+
+    classifier.eval()
+    with torch.no_grad():
+        X_val_t = torch.from_numpy(X[val_idx]).float().to(ctx.device)
+        logits = classifier(X_val_t)
+        probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+
+    auroc = roc_auc_score(y[val_idx], probs)
+
+    print(f'perturbation_detection: AUROC={auroc:.4f}, Accuracy={val_acc:.4f}')
+
+    return {
+        'config': {'n_control': len(control_emb), 'n_perturbed': len(case_emb), 'embedding_dim': int(control_emb.shape[1])},
+        'metrics': {'auroc': float(auroc), 'accuracy': float(val_acc), 'chance': 0.5}
+    }
+
+
+def _embedding_consistency(ctx):
+    '''Do replicates of the same perturbation cluster together?'''
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+
+    all_emb, all_pert = [], []
+    with torch.no_grad():
+        for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings'):
+            cont_x, cont_tot, case_x, case_tot, p_idx, _, _ = test_loader.next_batch()
+            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            all_emb.append(case_z)
+            all_pert.append(p_idx.cpu().numpy())
+
+    embeddings = np.concatenate(all_emb, axis=0)
+    pert_ids = np.concatenate(all_pert, axis=0).flatten()
+
+    pert_to_emb = defaultdict(list)
+    for i, pid in enumerate(pert_ids):
+        pert_to_emb[pid].append(embeddings[i])
+
+    valid_perts = {pid: np.array(embs) for pid, embs in pert_to_emb.items() if len(embs) >= 3}
+
+    if len(valid_perts) < 10:
+        return {'error': f'Not enough perturbations with >= 3 replicates (found {len(valid_perts)})'}
+
+    intra_dists = []
+    for pid, embs in valid_perts.items():
+        n = len(embs)
+        for i in range(n):
+            for j in range(i + 1, n):
+                intra_dists.append(np.linalg.norm(embs[i] - embs[j]))
+
+    pert_list = list(valid_perts.keys())
+    inter_dists = []
+    n_samples = min(5000, len(pert_list) * (len(pert_list) - 1) // 2)
+    rng = np.random.RandomState(42)
+    for _ in range(n_samples):
+        p1, p2 = rng.choice(pert_list, 2, replace=False)
+        e1 = valid_perts[p1][rng.randint(len(valid_perts[p1]))]
+        e2 = valid_perts[p2][rng.randint(len(valid_perts[p2]))]
+        inter_dists.append(np.linalg.norm(e1 - e2))
+
+    intra_mean, inter_mean = np.mean(intra_dists), np.mean(inter_dists)
+    ratio = inter_mean / intra_mean if intra_mean > 0 else float('inf')
+
+    print(f'embedding_consistency: Intra={intra_mean:.4f}, Inter={inter_mean:.4f}, Ratio={ratio:.2f}x')
+
+    return {
+        'config': {'n_perturbations': len(valid_perts), 'n_intra_pairs': len(intra_dists), 'n_inter_pairs': len(inter_dists)},
+        'metrics': {'mean_intra_distance': float(intra_mean), 'mean_inter_distance': float(inter_mean), 'inter_intra_ratio': float(ratio), 'std_intra_distance': float(np.std(intra_dists)), 'std_inter_distance': float(np.std(inter_dists))}
+    }
+
+
+def _latent_space_health(ctx):
+    '''Diagnostic metrics for embedding quality.'''
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+
+    all_emb = []
+    with torch.no_grad():
+        for _ in tqdm(range(test_steps), desc='latent_space_health: Extracting embeddings'):
+            cont_x, cont_tot, _, _, _, _, _ = test_loader.next_batch()
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            all_emb.append(emb)
+
+    embeddings = np.concatenate(all_emb, axis=0)
+    N, D = embeddings.shape
+
+    dim_variances = np.var(embeddings, axis=0)
+    mean_variance, min_variance, max_variance = np.mean(dim_variances), np.min(dim_variances), np.max(dim_variances)
+    n_dead_dims = int(np.sum(dim_variances < 1e-6))
+
+    pca = PCA()
+    pca.fit(embeddings)
+    cumsum = np.cumsum(pca.explained_variance_ratio_)
+    effective_dim_90 = int(np.searchsorted(cumsum, 0.90) + 1)
+    effective_dim_95 = int(np.searchsorted(cumsum, 0.95) + 1)
+
+    eigenvalues = pca.explained_variance_
+    isotropy_ratio = float(eigenvalues[-1] / eigenvalues[0]) if eigenvalues[0] > 0 else 0.0
+
+    n_sample = min(1000, N)
+    sample_idx = np.random.RandomState(42).choice(N, n_sample, replace=False)
+    sample_emb = embeddings[sample_idx]
+    sample_emb_norm = sample_emb / (np.linalg.norm(sample_emb, axis=1, keepdims=True) + 1e-8)
+    cos_sim_matrix = sample_emb_norm @ sample_emb_norm.T
+    upper_tri = cos_sim_matrix[np.triu_indices(n_sample, k=1)]
+    mean_cos_sim = float(np.mean(upper_tri))
+
+    print(f'latent_space_health: Eff_dim_90={effective_dim_90}/{D}, Mean_var={mean_variance:.4f}, Isotropy={isotropy_ratio:.6f}')
+
+    return {
+        'config': {'samples': N, 'embedding_dim': D},
+        'effective_dimensionality': {'90_percent': effective_dim_90, '95_percent': effective_dim_95, 'ratio_to_total_90': float(effective_dim_90 / D)},
+        'variance': {'mean': float(mean_variance), 'min': float(min_variance), 'max': float(max_variance), 'n_dead_dims': n_dead_dims},
+        'isotropy': {'min_max_eigenvalue_ratio': isotropy_ratio, 'mean_pairwise_cosine_sim': mean_cos_sim}
     }
 
 
