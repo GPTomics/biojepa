@@ -2,14 +2,29 @@
 
 This document outlines evaluations for BioJEPA. Each evaluation has biological relevance, tells a coherent story, and where possible connects to our defined use cases.
 
-All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with identical structure. The only difference is which model checkpoint and imports each version uses.
+---
+
+## Evaluation Stages
+
+**Pretraining Evals** (encoder-only, run after stage 1):
+- `batch_invariance`: Are representations confounded by batch effects?
+- `gene_embedding_pathways`: Do genes in same pathway cluster together?
+- `essential_gene_prediction`: Do gene embeddings encode functional importance?
+
+**Full Model Evals** (run after stage 2/3):
+- `expression_prediction`: Can we predict gene expression after perturbation?
+- `gene_level_analysis`: Direction of effect + top DEG recovery
+- `perturbation_retrieval`: Given desired outcome, find the perturbation
+- `uncertainty_calibration`: Are confidence estimates meaningful?
+- `action_vector_pathways`: Do same-pathway perturbations have similar action vectors?
+- `moa_matching`: Do same-pathway perturbations produce similar predicted effects?
 
 ---
 
 ## Implemented Evaluations
 
-### eval_1: Expression Prediction + Severity
-**Notebook**: `eval_1_expression_prediction.ipynb`
+### expression_prediction
+**Notebook**: `expression_prediction.ipynb`
 
 **Biological question**: Can we predict the gene expression profile after a perturbation? Can we predict how severe the perturbation's effect will be?
 
@@ -45,8 +60,8 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 
 ---
 
-### eval_2: Gene-Level Analysis (Direction + DEG Recovery)
-**Notebook**: `eval_2_gene_level_analysis.ipynb`
+### gene_level_analysis
+**Notebook**: `gene_level_analysis.ipynb`
 
 **Biological question**: Even when magnitude is wrong, does the model get the direction right? Does it identify which genes are most affected?
 
@@ -90,8 +105,8 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 
 ---
 
-### eval_3: Perturbation Retrieval
-**Notebook**: `eval_3_perturbation_retrieval.ipynb`
+### perturbation_retrieval
+**Notebook**: `perturbation_retrieval.ipynb`
 
 **Biological question**: Given a desired cellular outcome, can we identify which perturbation would achieve it?
 
@@ -120,15 +135,15 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 **Interpretation guide**:
 - This eval simulates the target discovery workflow: "I have a phenotype, what causes it?"
 - Recall@K answers "if I test the top K predictions, will I find the right answer?"
-- With ~1250 perturbations, random Recall@10 ≈ 0.008, so even modest performance is meaningful
+- With ~1250 perturbations, random Recall@10 = 0.008, so even modest performance is meaningful
 - MRR penalizes late ranks heavily - an MRR of 0.5 means the true perturbation is typically ranked around position 2
 - High Recall@10 but low Recall@1 suggests the model narrows down candidates but can't pinpoint exactly
 - Poor retrieval often indicates the model predicts similar deltas for many perturbations (low specificity)
 
 ---
 
-### eval_4: Uncertainty Calibration
-**Notebook**: `eval_4_uncertainty_calibration.ipynb`
+### uncertainty_calibration
+**Notebook**: `uncertainty_calibration.ipynb`
 
 **Biological question**: Are the model's confidence estimates meaningful?
 
@@ -164,8 +179,8 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 
 ---
 
-### eval_5: Batch Effect Invariance
-**Notebook**: `eval_5_batch_invariance.ipynb`
+### batch_invariance
+**Notebook**: `batch_invariance.ipynb`
 
 **Biological question**: Are the learned representations confounded by technical artifacts?
 
@@ -193,30 +208,26 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 - Batch accuracy >> chance means technical artifacts leak into representations - concerning for generalization
 - Perturbation accuracy should be high - this confirms embeddings encode biological signal
 - The ratio tells you how much more "biological" than "technical" your representations are
-- Example: 48 batches (chance=2.1%), 286 perts (chance=0.35%). Batch acc=2.9%, Pert acc=0.8% → Batch is 1.4x chance, Pert is 2.2x chance
+- Example: 48 batches (chance=2.1%), 286 perts (chance=0.35%). Batch acc=2.9%, Pert acc=0.8% -> Batch is 1.4x chance, Pert is 2.2x chance
 - Note: Low perturbation accuracy isn't necessarily bad if embeddings capture perturbation effects rather than identity
 
 ---
 
-### eval_6: Embedding Pathway Analysis
-**Notebook**: `eval_6_embedding_pathways.ipynb`
+### gene_embedding_pathways
+**Notebook**: `gene_embedding_pathways.ipynb`
 
-**Biological question**: Do learned embeddings capture known biological relationships?
-
-**Part A - Gene Embedding Pathway Recovery**: Do genes in the same pathway cluster together in the encoder's learned gene embeddings?
-
-**Part B - Action Vector Interpretability**: Do perturbations targeting genes in the same pathway produce similar action vectors?
+**Biological question**: Do genes in the same pathway cluster together in the encoder's learned gene embeddings?
 
 **Metrics**:
 
-| Metric | Part | Description |
-|--------|------|-------------|
-| Silhouette Score (KEGG) | A, B | Clustering quality (-1 to 1) for KEGG pathways |
-| Silhouette Score (Reactome) | A | Clustering quality for Reactome pathways |
-| k-NN Accuracy (KEGG) | A, B | Fraction of k nearest neighbors from same pathway |
-| k-NN Accuracy (Reactome) | A | Same, for Reactome |
-| n_classes | A, B | Number of pathways with sufficient samples |
-| n_samples | A, B | Number of genes/perturbations evaluated |
+| Metric | Description |
+|--------|-------------|
+| Silhouette Score (KEGG) | Clustering quality (-1 to 1) for KEGG pathways |
+| Silhouette Score (Reactome) | Clustering quality for Reactome pathways |
+| k-NN Accuracy (KEGG) | Fraction of k nearest neighbors from same pathway |
+| k-NN Accuracy (Reactome) | Same, for Reactome |
+| n_classes | Number of pathways with sufficient samples |
+| n_samples | Number of genes evaluated |
 
 **How to interpret**:
 
@@ -226,20 +237,48 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 | k-NN Accuracy | > 3x chance | 1.5-3x chance | < 1.5x chance | Chance = 1/n_pathways |
 
 **Interpretation guide**:
-- High silhouette means genes/perturbations in same pathway are close together and far from other pathways
+- High silhouette means genes in same pathway are close together and far from other pathways
 - Negative silhouette means genes are closer to other pathways than their own - embeddings don't capture pathway structure
 - k-NN accuracy measures if nearest neighbors share pathway membership
-- Gene embeddings (Part A) reflect encoder's learned gene relationships
-- Action vectors (Part B) reflect composer's learned perturbation relationships
-- Both should capture biological structure if the model learns meaningful representations
+- Gene embeddings reflect encoder's learned gene relationships
 - Pathways are imperfect labels - genes belong to multiple pathways, so moderate scores are expected
 
 **Data requirements**: Pathway annotations via gseapy (KEGG_2021_Human, Reactome_Pathways_2024).
 
 ---
 
-### eval_7: Mechanism of Action Matching
-**Notebook**: `eval_7_moa_matching.ipynb`
+### action_vector_pathways
+**Notebook**: `action_vector_pathways.ipynb`
+
+**Biological question**: Do perturbations targeting genes in the same pathway produce similar action vectors?
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Silhouette Score (KEGG) | Clustering quality (-1 to 1) for KEGG pathways |
+| k-NN Accuracy (KEGG) | Fraction of k nearest neighbors from same pathway |
+| n_classes | Number of pathways with sufficient samples |
+| n_samples | Number of perturbations evaluated |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Silhouette Score | > 0.2 | 0.0 - 0.2 | < 0.0 | Higher = tighter pathway clusters. Negative = wrong clusters |
+| k-NN Accuracy | > 3x chance | 1.5-3x chance | < 1.5x chance | Chance = 1/n_pathways |
+
+**Interpretation guide**:
+- Action vectors reflect composer's learned perturbation relationships
+- High silhouette means perturbations hitting same pathway produce similar action vectors
+- This tests whether the composer learns meaningful biological structure
+
+**Data requirements**: Pathway annotations via gseapy (KEGG_2021_Human).
+
+---
+
+### moa_matching
+**Notebook**: `moa_matching.ipynb`
 
 **Biological question**: Do perturbations targeting genes in the same pathway produce similar predicted expression changes?
 
@@ -275,8 +314,8 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 
 ---
 
-### eval_8: Essential Gene Prediction
-**Notebook**: `eval_8_essential_genes.ipynb`
+### essential_gene_prediction
+**Notebook**: `essential_gene_prediction.ipynb`
 
 **Biological question**: Do the learned gene embeddings encode functional importance?
 
@@ -315,15 +354,15 @@ All evaluations are implemented in both `v0_4/evals/` and `v0_5/evals/` with ide
 
 These evaluations require additional data or architectural changes and are not currently prioritized.
 
-### eval_9: Cross-Cell-Type Transfer
+### cross_cell_type_transfer
 **Status**: On Hold - requires new dataset processing
 
 **Biological question**: Does the model learn universal cell physics or K562-specific patterns?
 
 **Setup**:
 - Train on K562, evaluate zero-shot on RPE1 (or another cell line)
-- Same metrics as eval_1 (expression prediction)
-- Compare: K562→K562 vs. K562→RPE1 performance drop
+- Same metrics as expression_prediction
+- Compare: K562->K562 vs. K562->RPE1 performance drop
 
 **What's needed**:
 - Download and process Replogle RPE1 Essential dataset from GEARS/GEO
@@ -334,7 +373,7 @@ These evaluations require additional data or architectural changes and are not c
 
 ---
 
-### eval_10: Synthetic Lethality Signal
+### synthetic_lethality_signal
 **Status**: On Hold - requires architectural changes
 
 **Biological question**: Can the model identify known synthetic lethal pairs?
@@ -357,18 +396,19 @@ These evaluations require additional data or architectural changes and are not c
 
 ## Implementation Summary
 
-| Eval | Notebook | Biological Question | Key Metrics | Status |
-|------|----------|---------------------|-------------|--------|
-| 1 | eval_1_expression_prediction | Predict expression after perturbation | MSE, R², Severity correlation | Done |
-| 2 | eval_2_gene_level_analysis | Direction + DEG identification | Direction accuracy, Precision@K, NDCG | Done |
-| 3 | eval_3_perturbation_retrieval | Find perturbation from outcome | Recall@K, MRR | Done |
-| 4 | eval_4_uncertainty_calibration | Are confidence estimates meaningful? | Uncertainty-Error correlation, ECE | Done |
-| 5 | eval_5_batch_invariance | Batch vs biological signal | Classifier accuracies, Invariance ratio | Done |
-| 6 | eval_6_embedding_pathways | Pathway structure in embeddings | Silhouette, k-NN accuracy | Done |
-| 7 | eval_7_moa_matching | Same-pathway similarity | Within/between ratio, p-value | Done |
-| 8 | eval_8_essential_genes | Functional importance in embeddings | Pearson r, AUROC | Done |
-| 9 | - | Cross-cell-type transfer | Same as eval_1 | On Hold |
-| 10 | - | Synthetic lethality detection | TBD | On Hold |
+| Eval | Stage | Notebook | Biological Question | Key Metrics |
+|------|-------|----------|---------------------|-------------|
+| expression_prediction | Full | expression_prediction.ipynb | Predict expression after perturbation | MSE, R², Severity |
+| gene_level_analysis | Full | gene_level_analysis.ipynb | Direction + DEG identification | Direction acc, Precision@K |
+| perturbation_retrieval | Full | perturbation_retrieval.ipynb | Find perturbation from outcome | Recall@K, MRR |
+| uncertainty_calibration | Full | uncertainty_calibration.ipynb | Are confidence estimates meaningful? | ECE, Monotonicity |
+| batch_invariance | Pretrain | batch_invariance.ipynb | Batch vs biological signal | Invariance ratio |
+| gene_embedding_pathways | Pretrain | gene_embedding_pathways.ipynb | Pathway structure in gene embeddings | Silhouette, k-NN |
+| action_vector_pathways | Full | action_vector_pathways.ipynb | Pathway structure in action vectors | Silhouette, k-NN |
+| moa_matching | Full | moa_matching.ipynb | Same-pathway similarity | Within/between ratio |
+| essential_gene_prediction | Pretrain | essential_gene_prediction.ipynb | Functional importance in embeddings | Pearson r, AUROC |
+| cross_cell_type_transfer | - | - | Cross-cell-type transfer | On Hold |
+| synthetic_lethality_signal | - | - | Synthetic lethality detection | On Hold |
 
 ---
 
@@ -376,9 +416,9 @@ These evaluations require additional data or architectural changes and are not c
 
 | Data | Source | Evaluations | Status |
 |------|--------|-------------|--------|
-| K562 Essential test set | Already have | 1-8 | Done |
-| Batch labels (gem_group) | Added to shards | 5 | Done |
-| KEGG/Reactome pathways | gseapy | 6, 7 | Done |
-| DepMap K562 CRISPR | DepMap API | 8 | Done |
-| Replogle RPE1 | GEARS/GEO | 9 | Pending |
-| SynLethDB | Public database | 10 | Pending |
+| K562 Essential test set | Already have | All | Done |
+| Batch labels (gem_group) | Added to shards | batch_invariance | Done |
+| KEGG/Reactome pathways | gseapy | gene_embedding_pathways, action_vector_pathways, moa_matching | Done |
+| DepMap K562 CRISPR | DepMap API | essential_gene_prediction | Done |
+| Replogle RPE1 | GEARS/GEO | cross_cell_type_transfer | Pending |
+| SynLethDB | Public database | synthetic_lethality_signal | Pending |
