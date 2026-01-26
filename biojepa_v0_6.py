@@ -202,9 +202,9 @@ class ActionComposer(nn.Module):
     def forward(self, features, modality_ids, mode_ids):
         B = features.shape[0]
         device = features.device
-        
+
         content_latents = torch.zeros(B, self.config.latent_dim, device=device)
-        
+
         for i, projector in enumerate(self.projectors):
             mask = (modality_ids == i)
             if mask.any():
@@ -226,8 +226,9 @@ class CellStateEncoderConfig:
     n_layer: int = 24 
     heads: int = 12
     embed_dim: int = 768
-    mlp_ratio: float = 4.0 
+    mlp_ratio: float = 4.0
     gaussian_scale: float = 2.0
+    film_linear_multiple: float = 1.0
 
 class CellStateEncoder(nn.Module):
     def __init__(self, config):
@@ -259,7 +260,7 @@ class CellStateEncoder(nn.Module):
 
         # Initiation 
         self.apply(init_weights_robust)
-        nn.init.constant_(self.linear_scaler.weight, 1.0)
+        nn.init.constant_(self.linear_scaler.weight, config.film_linear_multiple)
         nn.init.constant_(self.fourier_input_scaler.weight, 0.1)
         nn.init.zeros_(self.film_generator[-1].weight)
         nn.init.zeros_(self.film_generator[-1].bias)
@@ -377,17 +378,22 @@ class BioJepaConfig:
     mlp_ratio: float = 4.0
 
     # pretraining
-    n_pre_layer: int = 3 
+    n_pre_layer: int = 3
     mask_ratio: float = 0.6
+    gaussian_scale: float = 2.0
+    film_linear_multiple: float = 1.0
 
     # Loss weights
     sim_coeff: float = 25.0
     std_coeff: float = 25.0
     cov_coeff: float = 1.0
 
-    #Perturb Configs
+    # Perturb Configs
     pert_latent_dim: int = 320
     pert_mode_dim: int = 64
+
+    # EMA
+    ema_momentum: float = 0.996
     
 class BioJepa(nn.Module):
     def __init__(self, config):
@@ -399,7 +405,9 @@ class BioJepa(nn.Module):
             n_layer=config.n_layer,
             heads=config.heads,
             embed_dim=config.embed_dim,
-            mlp_ratio=config.mlp_ratio
+            mlp_ratio=config.mlp_ratio,
+            gaussian_scale=config.gaussian_scale,
+            film_linear_multiple=config.film_linear_multiple
         )
         
         self.student = CellStateEncoder(enc_conf)
@@ -558,7 +566,9 @@ class BioJepa(nn.Module):
 
 
     @torch.no_grad()
-    def update_teacher(self, m=0.996):
+    def update_teacher(self, m=None):
+        if m is None:
+            m = self.config.ema_momentum
         for param_s, param_t in zip(self.student.parameters(), self.teacher.parameters()):
             param_t.data.mul_(m).add_((1 - m) * param_s.data)
             

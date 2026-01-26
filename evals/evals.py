@@ -30,10 +30,10 @@ from .linear_classifier import train_linear_classifier
 
 DEFAULT_CONFIG = {
     'batch_size': 32,
-    'n_genes': 5000,
-    'n_layers': 2,
-    'n_heads': 2,
-    'n_embd': 8,
+    'num_genes': 5000,
+    'n_layer': 2,
+    'heads': 2,
+    'embed_dim': 8,
     'pert_latent_dim': 320,
     'pert_mode_dim': 64,
     'test_total_examples': 38829
@@ -56,6 +56,20 @@ class EvalContext:
         self._gene_names = None
         self._test_inference = None
 
+    @classmethod
+    def from_trained_model(cls, biojepa_model, decoder=None, data_root='/Users/djemec/data/jepa/v0_6', config=None):
+        '''Create context from in-memory trained model (for notebook integration).'''
+        ctx = cls(config=config, data_root=data_root, checkpoint_root=data_root)
+        ctx._biojepa = biojepa_model
+        ctx._biojepa.freeze_encoders()
+        ctx._biojepa.eval()
+        for param in ctx._biojepa.parameters():
+            param.requires_grad = False
+        if decoder is not None:
+            ctx._decoder = decoder
+            ctx._decoder.eval()
+        return ctx
+
     def _get_paths(self, data_root, checkpoint_root):
         data_dir = Path(data_root)
         return {
@@ -71,12 +85,12 @@ class EvalContext:
             print('Loading BioJEPA model...')
             torch.set_float32_matmul_precision('high')
             model_config = model.BioJepaConfig(
-                num_genes=self.config['n_genes'], n_layer=self.config['n_layers'], heads=self.config['n_heads'],
-                embed_dim=self.config['n_embd'], n_pre_layer=self.config['n_layers'],
+                num_genes=self.config['num_genes'], n_layer=self.config['n_layer'], heads=self.config['heads'],
+                embed_dim=self.config['embed_dim'], n_pre_layer=self.config['n_layer'],
                 pert_latent_dim=self.config['pert_latent_dim'], pert_mode_dim=self.config['pert_mode_dim']
             )
             self._biojepa = model.BioJepa(model_config).to(self.device)
-            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'bio_jepa_ckpt_31769_final.pt', map_location=self.device)
+            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'biojepa_v0_6_full_final.pt', map_location=self.device)
             print(self._biojepa.load_state_dict(checkpoint['model']))
             self._biojepa.freeze_encoders()
             self._biojepa.eval()
@@ -88,9 +102,9 @@ class EvalContext:
     def decoder(self):
         if self._decoder is None:
             print('Loading decoder...')
-            decoder_config = BenchmarkDecoderConfig(embed_dim=self.config['n_embd'])
+            decoder_config = BenchmarkDecoderConfig(embed_dim=self.config['embed_dim'])
             self._decoder = BenchmarkDecoder(decoder_config).to(self.device)
-            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'linear_decoder_ckpt_15884_final.pt', map_location=self.device)
+            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'biojepa_v0_6_decoder_final.pt', map_location=self.device)
             self._decoder.load_state_dict(checkpoint['model'])
             self._decoder.eval()
         return self._decoder
@@ -125,7 +139,7 @@ class EvalContext:
         '''Run inference on test set. Returns aggregated and per-sample data.'''
         test_loader = TrainingLoader(batch_size=self.config['batch_size'], split='test', data_dir=self.paths['train_dir'], device=self.device)
         test_steps = self.config['test_total_examples'] // self.config['batch_size']
-        N = self.config['n_genes']
+        N = self.config['num_genes']
 
         bulk_pred_deltas, bulk_real_deltas = defaultdict(list), defaultdict(list)
         bulk_pred_abs, bulk_real_abs = defaultdict(list), defaultdict(list)
@@ -415,7 +429,7 @@ def _reconstruction(ctx):
     '''Can gene expression be reconstructed from embeddings?'''
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
-    n_genes = ctx.config['n_genes']
+    n_genes = ctx.config['num_genes']
 
     all_emb, all_expr = [], []
     with torch.no_grad():
@@ -627,7 +641,7 @@ def _expression_prediction(ctx):
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
     mean_pred_abs, mean_real_abs = inf['mean_pred_abs'], inf['mean_real_abs']
     sample_mses, sample_correlations = inf['sample_mses'], inf['sample_correlations']
-    n_genes = ctx.config['n_genes']
+    n_genes = ctx.config['num_genes']
 
     TOP_K = 50
     per_pert_r2_all, per_pert_r2_top50, per_pert_mse = [], [], []
@@ -682,7 +696,7 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     inf = ctx.test_inference
     pert_ids = inf['pert_ids']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
-    n_genes = ctx.config['n_genes']
+    n_genes = ctx.config['num_genes']
 
     def classify_direction(delta, threshold=direction_threshold):
         direction = np.zeros_like(delta, dtype=np.int8)
@@ -755,7 +769,7 @@ def _perturbation_retrieval(ctx, n_eval=100):
     pert_ids = inf['pert_ids']
     mean_real_deltas = inf['mean_real_deltas']
     mean_control_states = inf['mean_control_states']
-    n_genes, n_perturbations = ctx.config['n_genes'], ctx.input_bank.shape[0]
+    n_genes, n_perturbations = ctx.config['num_genes'], ctx.input_bank.shape[0]
 
     pert_mod = torch.zeros(n_perturbations, dtype=torch.long, device=ctx.device)
     pert_mode = torch.zeros(n_perturbations, dtype=torch.long, device=ctx.device)

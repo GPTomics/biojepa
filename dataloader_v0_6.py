@@ -4,29 +4,30 @@ import random
 from pathlib import Path
 
 class _BaseShardLoader:
-    def __init__(self, batch_size, split, data_dir, device):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None):
         self.batch_size = batch_size
         self.split = split
         self.device = device
-        
-        # Ensure path is a Path object
+
         self.data_dir = Path(data_dir)
         self.data_root = self.data_dir / split
-        
-        # Find shards
+
         self.shards = sorted(list(self.data_root.glob('*.npz')))
         print(f'found {len(self.shards)} shards for split {split}')
-        
-        # Internal state
+
         self.remaining_shards = []
         self.current_shard_idx = -1
         self.data_tuple = None
         self.perm = None
         self.current_position = 0
         self.total_samples_in_shard = 0
-        
-        # Initialize
+
         self.reset()
+
+        if total_samples is not None:
+            self.total_samples = total_samples
+        else:
+            self.total_samples = self.total_samples_in_shard * len(self.shards)
 
     def reset(self):
         self.remaining_shards = list(self.shards)
@@ -39,8 +40,11 @@ class _BaseShardLoader:
         raise NotImplementedError
 
     def load_next_shard(self):
+        if not self.remaining_shards:
+            raise RuntimeError(f'No shards found in {self.data_root}')
+
         self.current_shard_idx += 1
-        
+
         # Check if epoch is done (all shards visited)
         if self.current_shard_idx >= len(self.remaining_shards):
             self.reset()
@@ -111,6 +115,9 @@ class _BaseShardLoader:
 
 
 class PretrainLoader(_BaseShardLoader):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None):
+        super().__init__(batch_size, split, data_dir, device, total_samples)
+
     def load_file(self, filename):
         print(f'loading {filename}')
         with np.load(filename) as data:
@@ -118,7 +125,11 @@ class PretrainLoader(_BaseShardLoader):
             total = data['total'].astype(np.float32)
         return x, total
 
+
 class AlignmentLoader(_BaseShardLoader):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None):
+        super().__init__(batch_size, split, data_dir, device, total_samples)
+
     def load_file(self, filename):
         print(f'loading {filename}')
         with np.load(filename) as data:
@@ -130,10 +141,10 @@ class AlignmentLoader(_BaseShardLoader):
 
 
 class TrainingLoader(_BaseShardLoader):
-    def __init__(self, batch_size, split, data_dir, device, return_batch_id=False, return_cell_type=False):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, return_batch_id=False, return_cell_type=False):
         self.return_batch_id = return_batch_id
         self.return_cell_type = return_cell_type
-        super().__init__(batch_size, split, data_dir, device)
+        super().__init__(batch_size, split, data_dir, device, total_samples)
 
     def load_file(self, filename):
         print(f'loading {filename}')

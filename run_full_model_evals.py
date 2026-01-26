@@ -10,7 +10,7 @@ Evaluations:
 - moa_matching: Do same-pathway perturbations produce similar predicted effects?
 '''
 import argparse
-from evals import EvalContext, run_full_model_evals, save_report
+from evals.evals import EvalContext, run_full_model_evals, save_report
 
 parser = argparse.ArgumentParser(description='Run full model evaluations for BioJEPA v0.6')
 parser.add_argument('--output', default='eval_report.json', help='Output file for results')

@@ -7,7 +7,7 @@ Evaluations:
 - essential_gene_prediction: Do gene embeddings encode functional importance?
 '''
 import argparse
-from evals import EvalContext, run_pretraining_evals, save_report
+from evals.evals import EvalContext, run_pretraining_evals, save_report
 
 parser = argparse.ArgumentParser(description='Run pretraining evaluations for BioJEPA v0.6')
 parser.add_argument('--output', default='eval_report.json', help='Output file for results')
