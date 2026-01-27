@@ -1,9 +1,13 @@
 '''BioJEPA v0.6 Evaluation Suite
 
-Two entry points:
-- run_pretraining_evals(ctx): batch_invariance, gene_embedding_pathways, essential_gene_prediction
+Three entry points:
+- run_pretraining_evals(ctx): batch_invariance, gene_embedding_pathways, essential_gene_prediction,
+                              cell_type_probing, reconstruction, perturbation_detection,
+                              embedding_consistency, latent_space_health
 - run_full_model_evals(ctx): expression_prediction, gene_level_analysis, perturbation_retrieval,
                              uncertainty_calibration, action_vector_pathways, moa_matching
+- run_alignment_evals(ctx): alignment_recall, modality_gap_analysis, anchor_input_consistency,
+                            mode_sensitivity, target_family_probing
 '''
 
 import json
@@ -20,6 +24,7 @@ from sklearn.metrics import r2_score, accuracy_score, roc_auc_score, f1_score
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
+from scipy.spatial.distance import pdist
 
 import biojepa_v0_6 as model
 from dataloader_v0_6 import TrainingLoader
@@ -28,23 +33,17 @@ from .pathway_utils import load_pathway_annotations, map_genes_to_pathways, comp
 from .linear_classifier import train_linear_classifier
 
 
-DEFAULT_CONFIG = {
-    'batch_size': 32,
-    'num_genes': 5000,
-    'n_layer': 2,
-    'heads': 2,
-    'embed_dim': 8,
-    'pert_latent_dim': 320,
-    'pert_mode_dim': 64,
-    'test_total_examples': 38829
-}
+REQUIRED_CONFIG_KEYS = ['num_genes', 'embed_dim', 'n_layer', 'heads', 'batch_size']
 
 
 class EvalContext:
     '''Unified context for running evaluations. All loading is lazy.'''
 
-    def __init__(self, config=None, data_root='/Users/djemec/data/jepa/v0_6', checkpoint_root='/Users/djemec/data/jepa/v0_6'):
-        self.config = {**DEFAULT_CONFIG, **(config or {})}
+    def __init__(self, config, data_root='/Users/djemec/data/jepa/v0_6', checkpoint_root='/Users/djemec/data/jepa/v0_6'):
+        missing_keys = [k for k in REQUIRED_CONFIG_KEYS if k not in config]
+        if missing_keys:
+            raise ValueError(f'Missing required config keys: {missing_keys}. Required: {REQUIRED_CONFIG_KEYS}')
+        self.config = {'test_total_examples': 38829, 'pert_latent_dim': 320, 'pert_mode_dim': 64, **config}
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.paths = self._get_paths(data_root, checkpoint_root)
         print(f'Using {self.device}')
@@ -55,10 +54,18 @@ class EvalContext:
         self._gene_embeddings = None
         self._gene_names = None
         self._test_inference = None
+        self._anchor_bank = None
+        self._alignment_pairs = None
+        self._alignment_inference = None
+        self._hgnc_gene_families = None
+        self._pathway_annotations = None
+        self._id_to_gene = None
 
     @classmethod
     def from_trained_model(cls, biojepa_model, decoder=None, data_root='/Users/djemec/data/jepa/v0_6', config=None):
         '''Create context from in-memory trained model (for notebook integration).'''
+        if config is None:
+            raise ValueError('config is required. Must include: ' + ', '.join(REQUIRED_CONFIG_KEYS))
         ctx = cls(config=config, data_root=data_root, checkpoint_root=data_root)
         ctx._biojepa = biojepa_model
         ctx._biojepa.freeze_encoders()
@@ -76,7 +83,8 @@ class EvalContext:
             'data_dir': data_dir,
             'train_dir': data_dir / 'training',
             'checkpoint_dir': Path(checkpoint_root) / 'checkpoints',
-            'pert_dir': data_dir / 'pert_embd'
+            'pert_dir': data_dir / 'pert_embd',
+            'ref_dir': Path('/Users/djemec/data/jepa/reference_data')
         }
 
     @property
@@ -128,6 +136,81 @@ class EvalContext:
             with open(self.paths['data_dir'] / 'gene_names.json') as f:
                 self._gene_names = json.load(f)
         return self._gene_names
+
+    @property
+    def anchor_bank(self):
+        if self._anchor_bank is None:
+            self._anchor_bank = torch.from_numpy(np.load(self.paths['pert_dir'] / 'action_embeddings_esm2.npy')).float().to(self.device)
+            print(f'Loaded anchor bank: {self._anchor_bank.shape}')
+        return self._anchor_bank
+
+    @property
+    def alignment_pairs(self):
+        if self._alignment_pairs is None:
+            pairs_path = self.paths['pert_dir'] / 'train' / 'pert_pairs_crispri_train.npz'
+            with np.load(pairs_path) as data:
+                self._alignment_pairs = {'input_idx': data['input_idx'], 'anchor_idx': data['anchor_idx']}
+            print(f'Loaded {len(self._alignment_pairs["input_idx"])} alignment pairs')
+        return self._alignment_pairs
+
+    @property
+    def alignment_inference(self):
+        '''Cached action vectors for alignment evals. Computed once, reused by all.'''
+        if self._alignment_inference is None:
+            import torch.nn.functional as F
+            n_dna = self.input_bank.shape[0]
+            n_prot = self.anchor_bank.shape[0]
+            with torch.no_grad():
+                dna_mod = torch.full((n_dna,), 2, dtype=torch.long, device=self.device)
+                dna_mode = torch.zeros(n_dna, dtype=torch.long, device=self.device)
+                dna_actions = self.biojepa.composer(self.input_bank, dna_mod, dna_mode)
+                prot_mod = torch.zeros(n_prot, dtype=torch.long, device=self.device)
+                prot_mode = torch.full((n_prot,), 8, dtype=torch.long, device=self.device)
+                prot_actions = self.biojepa.composer(self.anchor_bank, prot_mod, prot_mode)
+            self._alignment_inference = {
+                'dna_actions': dna_actions,
+                'prot_actions': prot_actions,
+                'dna_actions_norm': F.normalize(dna_actions, dim=1),
+                'prot_actions_norm': F.normalize(prot_actions, dim=1),
+            }
+            print(f'Computed alignment inference: DNA {dna_actions.shape}, Prot {prot_actions.shape}')
+        return self._alignment_inference
+
+    @property
+    def hgnc_gene_families(self):
+        if self._hgnc_gene_families is None:
+            hgnc_path = self.paths['ref_dir'] / 'gene_family' / 'hgnc.tsv'
+            gene_to_family, ensg_to_family = {}, {}
+            with open(hgnc_path) as f:
+                next(f)
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 16 and parts[15]:
+                        symbol = parts[1].upper()
+                        ensg = parts[10] if len(parts) > 10 else None
+                        family = parts[15]
+                        gene_to_family[symbol] = family
+                        if ensg:
+                            ensg_to_family[ensg] = family
+            self._hgnc_gene_families = {'by_symbol': gene_to_family, 'by_ensg': ensg_to_family}
+            print(f'Loaded {len(gene_to_family)} HGNC gene family annotations')
+        return self._hgnc_gene_families
+
+    @property
+    def pathway_annotations(self):
+        '''Cached pathway annotations for KEGG and Reactome.'''
+        if self._pathway_annotations is None:
+            self._pathway_annotations = load_pathway_annotations(['KEGG_2021_Human', 'Reactome_Pathways_2024'])
+        return self._pathway_annotations
+
+    @property
+    def id_to_gene(self):
+        '''Cached mapping from perturbation ID to gene symbol.'''
+        if self._id_to_gene is None:
+            with open(self.paths['pert_dir'] / 'input_to_id.json') as f:
+                input_to_id = json.load(f)
+            self._id_to_gene = {pid: key.split('_')[0].upper() for key, pid in input_to_id.items()}
+        return self._id_to_gene
 
     @property
     def test_inference(self):
@@ -255,6 +338,17 @@ def run_full_model_evals(ctx):
     }
 
 
+def run_alignment_evals(ctx):
+    '''Run alignment stage evaluations.'''
+    return {
+        'alignment_recall': _alignment_recall(ctx),
+        'modality_gap_analysis': _modality_gap_analysis(ctx),
+        'anchor_input_consistency': _anchor_input_consistency(ctx),
+        'mode_sensitivity': _mode_sensitivity(ctx),
+        'target_family_probing': _target_family_probing(ctx),
+    }
+
+
 # =============================================================================
 # PRETRAINING EVALS
 # =============================================================================
@@ -302,7 +396,7 @@ def _batch_invariance(ctx):
 
 def _gene_embedding_pathways(ctx):
     '''Do genes in same pathway cluster in learned embeddings?'''
-    pathway_libs = load_pathway_annotations(['KEGG_2021_Human', 'Reactome_Pathways_2024'])
+    pathway_libs = ctx.pathway_annotations
 
     gene_labels_kegg, pathway_to_genes_kegg = map_genes_to_pathways(ctx.gene_names, pathway_libs['KEGG_2021_Human'], min_pathway_size=15, max_pathway_size=300)
     kegg_idx = list(set(idx for indices in pathway_to_genes_kegg.values() for idx in indices))
@@ -699,6 +793,7 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     n_genes = ctx.config['num_genes']
 
     def classify_direction(delta, threshold=direction_threshold):
+        '''Classify gene expression changes as UP (1), DOWN (-1), or UNCHANGED (0).'''
         direction = np.zeros_like(delta, dtype=np.int8)
         direction[delta >= threshold] = 1
         direction[delta <= -threshold] = -1
@@ -735,9 +830,11 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
             accuracy_by_magnitude[bin_labels[i]] = {'accuracy': float(all_correct[mask].mean()), 'count': int(mask.sum())}
 
     def precision_at_k(pred_rank, true_rank, k):
+        '''Fraction of predicted top-k that are in true top-k.'''
         return len(set(pred_rank[:k]) & set(true_rank[:k])) / k
 
     def ndcg_at_k(pred_rank, true_rank, k):
+        '''Normalized Discounted Cumulative Gain for ranking quality.'''
         true_set = set(true_rank[:k])
         rels = [1 if g in true_set else 0 for g in pred_rank[:k]]
         dcg = sum(r / np.log2(i + 2) for i, r in enumerate(rels))
@@ -775,6 +872,7 @@ def _perturbation_retrieval(ctx, n_eval=100):
     pert_mode = torch.zeros(n_perturbations, dtype=torch.long, device=ctx.device)
 
     def predict_all_deltas(control_x_np, batch_size=64):
+        '''Predict expression deltas for all perturbations given a control state.'''
         control_x = torch.from_numpy(control_x_np).float().to(ctx.device)
         control_tot = control_x.sum()
         all_pred = []
@@ -793,6 +891,7 @@ def _perturbation_retrieval(ctx, n_eval=100):
         return np.concatenate(all_pred, axis=0)
 
     def cos_sim(a, b):
+        '''Compute cosine similarity between rows of matrix a and vector b.'''
         a_n = a / (np.linalg.norm(a, axis=-1, keepdims=True) + 1e-8)
         b_n = b / (np.linalg.norm(b) + 1e-8)
         return np.dot(a_n, b_n)
@@ -839,10 +938,17 @@ def _uncertainty_calibration(ctx, n_bins=10):
 
     unc_norm = (sample_unc - sample_unc.min()) / (sample_unc.max() - sample_unc.min() + 1e-8)
     err_norm = (sample_mse - sample_mse.min()) / (sample_mse.max() - sample_mse.min() + 1e-8)
-    ece = sum((((unc_norm >= i/n_bins) & (unc_norm < (i+1)/n_bins if i < n_bins-1 else unc_norm <= 1)).sum() / len(sample_mse)) *
-              abs(unc_norm[(unc_norm >= i/n_bins) & (unc_norm < (i+1)/n_bins if i < n_bins-1 else unc_norm <= 1)].mean() -
-                  err_norm[(unc_norm >= i/n_bins) & (unc_norm < (i+1)/n_bins if i < n_bins-1 else unc_norm <= 1)].mean())
-              for i in range(n_bins) if ((unc_norm >= i/n_bins) & (unc_norm < (i+1)/n_bins if i < n_bins-1 else unc_norm <= 1)).sum() > 0)
+    ece = 0.0
+    for i in range(n_bins):
+        low = i / n_bins
+        high = (i + 1) / n_bins if i < n_bins - 1 else 1.0
+        mask = (unc_norm >= low) & (unc_norm < high if i < n_bins - 1 else unc_norm <= high)
+        if mask.sum() == 0:
+            continue
+        bin_weight = mask.sum() / len(sample_mse)
+        bin_unc_mean = unc_norm[mask].mean()
+        bin_err_mean = err_norm[mask].mean()
+        ece += bin_weight * abs(bin_unc_mean - bin_err_mean)
 
     pert_unc, pert_err = defaultdict(list), defaultdict(list)
     for i, pid in enumerate(pert_ids):
@@ -865,11 +971,8 @@ def _uncertainty_calibration(ctx, n_bins=10):
 
 def _action_vector_pathways(ctx):
     '''Do perturbations targeting same pathway produce similar action vectors?'''
-    with open(ctx.paths['pert_dir'] / 'input_to_id.json') as f:
-        input_to_id = json.load(f)
-    id_to_gene = {pid: key.split('_')[0].upper() for key, pid in input_to_id.items()}
-
-    pathway_libs = load_pathway_annotations(['KEGG_2021_Human'])
+    id_to_gene = ctx.id_to_gene
+    pathway_libs = ctx.pathway_annotations
     n_perts = ctx.input_bank.shape[0]
     with torch.no_grad():
         action_vectors = ctx.biojepa.composer(ctx.input_bank, torch.zeros(n_perts, dtype=torch.long, device=ctx.device), torch.zeros(n_perts, dtype=torch.long, device=ctx.device)).cpu().numpy()
@@ -892,11 +995,8 @@ def _action_vector_pathways(ctx):
 def _moa_matching(ctx):
     '''Do same-pathway perturbations produce similar predicted effects?'''
     inf = ctx.test_inference
-    pathway_libs = load_pathway_annotations(['KEGG_2021_Human'])
-
-    with open(ctx.paths['pert_dir'] / 'input_to_id.json') as f:
-        input_to_id = json.load(f)
-    id_to_gene = {pid: key.split('_')[0].upper() for key, pid in input_to_id.items()}
+    pathway_libs = ctx.pathway_annotations
+    id_to_gene = ctx.id_to_gene
 
     gene_to_pathway = {}
     for pathway, genes in pathway_libs['KEGG_2021_Human'].items():
@@ -947,4 +1047,201 @@ def _moa_matching(ctx):
     return {
         'config': {'n_pathways': len(valid_pathways), 'n_perturbations': len(all_perts)},
         'similarity': {'mean_within_pathway': float(mean_within), 'mean_between_pathway': float(mean_between), 'similarity_ratio': float(ratio), 'mann_whitney_p': float(p_val), 'n_within_pairs': len(within_sims), 'n_between_pairs': len(between_sims)}
+    }
+
+
+# =============================================================================
+# ALIGNMENT EVALS
+# =============================================================================
+
+def _alignment_recall(ctx):
+    '''Can we retrieve the correct protein anchor from a DNA query?'''
+    pairs = ctx.alignment_pairs
+    inf = ctx.alignment_inference
+    dna_norm = inf['dna_actions_norm']
+    prot_norm = inf['prot_actions_norm']
+
+    input_idx = pairs['input_idx']
+    anchor_idx = pairs['anchor_idx']
+    n_pairs = len(input_idx)
+
+    unique_inputs = np.unique(input_idx)
+    input_to_anchor = {inp: [] for inp in unique_inputs}
+    for inp, anc in zip(input_idx, anchor_idx):
+        input_to_anchor[inp].append(anc)
+
+    sim_matrix = torch.mm(dna_norm, prot_norm.T).cpu().numpy()
+    ranks, reciprocal_ranks = [], []
+    K_VALUES = [1, 5, 10, 20, 50]
+    recall_at_k = {k: [] for k in K_VALUES}
+
+    for inp_id in unique_inputs:
+        correct_anchors = set(input_to_anchor[inp_id])
+        sims = sim_matrix[inp_id]
+        sorted_indices = np.argsort(sims)[::-1]
+        for rank, idx in enumerate(sorted_indices, 1):
+            if idx in correct_anchors:
+                ranks.append(rank)
+                reciprocal_ranks.append(1.0 / rank)
+                for k in K_VALUES:
+                    recall_at_k[k].append(1 if rank <= k else 0)
+                break
+
+    mrr = float(np.mean(reciprocal_ranks))
+    median_rank = float(np.median(ranks))
+    mean_rank = float(np.mean(ranks))
+    n_proteins = prot_norm.shape[0]
+
+    print(f'alignment_recall: MRR={mrr:.4f}, Median_rank={median_rank:.0f}/{n_proteins}')
+
+    return {
+        'config': {'n_unique_dna': len(unique_inputs), 'n_pairs': n_pairs, 'n_proteins': n_proteins},
+        'metrics': {'mrr': mrr, 'median_rank': median_rank, 'mean_rank': mean_rank},
+        'recall_at_k': {str(k): {'recall': float(np.mean(recall_at_k[k])), 'vs_random': float(np.mean(recall_at_k[k]) / (k / n_proteins))} for k in K_VALUES}
+    }
+
+
+def _modality_gap_analysis(ctx):
+    '''Do DNA and Protein embeddings cluster separately in action space?'''
+    inf = ctx.alignment_inference
+    dna_actions = inf['dna_actions'].cpu().numpy()
+    prot_actions = inf['prot_actions'].cpu().numpy()
+
+    dna_centroid = np.mean(dna_actions, axis=0)
+    prot_centroid = np.mean(prot_actions, axis=0)
+    centroid_distance = float(np.linalg.norm(dna_centroid - prot_centroid))
+
+    dna_var = np.mean([np.linalg.norm(a - dna_centroid)**2 for a in dna_actions])
+    prot_var = np.mean([np.linalg.norm(a - prot_centroid)**2 for a in prot_actions])
+    avg_within_var = (dna_var + prot_var) / 2
+
+    n_sample = min(500, len(dna_actions), len(prot_actions))
+    rng = np.random.RandomState(42)
+    dna_sample = dna_actions[rng.choice(len(dna_actions), n_sample, replace=False)]
+    prot_sample = prot_actions[rng.choice(len(prot_actions), n_sample, replace=False)]
+
+    within_dna_dists = pdist(dna_sample)
+    within_prot_dists = pdist(prot_sample)
+    between_dists = np.linalg.norm(dna_sample[:, None] - prot_sample[None, :], axis=-1).flatten()
+
+    mean_within = float((np.mean(within_dna_dists) + np.mean(within_prot_dists)) / 2)
+    mean_between = float(np.mean(between_dists))
+    gap_ratio = float(mean_between / mean_within) if mean_within > 0 else float('inf')
+
+    print(f'modality_gap_analysis: Centroid_dist={centroid_distance:.4f}, Gap_ratio={gap_ratio:.2f}')
+
+    return {
+        'config': {'n_dna': len(dna_actions), 'n_protein': len(prot_actions), 'latent_dim': int(dna_actions.shape[1])},
+        'centroids': {'distance': centroid_distance, 'dna_variance': float(dna_var), 'prot_variance': float(prot_var)},
+        'pairwise_distances': {'mean_within_dna': float(np.mean(within_dna_dists)), 'mean_within_prot': float(np.mean(within_prot_dists)), 'mean_between': mean_between, 'gap_ratio': gap_ratio}
+    }
+
+
+def _anchor_input_consistency(ctx):
+    '''For the same gene, do DNA and Protein embeddings produce similar actions?'''
+    pairs = ctx.alignment_pairs
+    inf = ctx.alignment_inference
+    dna_actions = inf['dna_actions_norm']
+    prot_actions = inf['prot_actions_norm']
+
+    input_idx = pairs['input_idx']
+    anchor_idx = pairs['anchor_idx']
+
+    unique_pairs = list(set(zip(input_idx, anchor_idx)))
+    cos_sims = []
+    for inp, anc in unique_pairs:
+        sim = torch.dot(dna_actions[inp], prot_actions[anc]).item()
+        cos_sims.append(sim)
+
+    cos_sims = np.array(cos_sims)
+    mean_sim = float(np.mean(cos_sims))
+    std_sim = float(np.std(cos_sims))
+    percentiles = {str(p): float(np.percentile(cos_sims, p)) for p in [5, 25, 50, 75, 95]}
+
+    print(f'anchor_input_consistency: Mean_cos_sim={mean_sim:.4f}, Std={std_sim:.4f}')
+
+    return {
+        'config': {'n_pairs': len(unique_pairs)},
+        'metrics': {'mean_cosine_sim': mean_sim, 'std_cosine_sim': std_sim, 'percentiles': percentiles}
+    }
+
+
+def _mode_sensitivity(ctx):
+    '''Does FiLM conditioning on mode change the embeddings appropriately?'''
+    n_sample = min(200, ctx.input_bank.shape[0])
+    rng = np.random.RandomState(42)
+    sample_idx = rng.choice(ctx.input_bank.shape[0], n_sample, replace=False)
+    sample_feats = ctx.input_bank[sample_idx]
+
+    MODES = {'crispri': 0, 'crispra': 1, 'knockout': 3}
+    mode_actions = {}
+    with torch.no_grad():
+        mod = torch.full((n_sample,), 2, dtype=torch.long, device=ctx.device)
+        for mode_name, mode_id in MODES.items():
+            mode_ids = torch.full((n_sample,), mode_id, dtype=torch.long, device=ctx.device)
+            actions = ctx.biojepa.composer(sample_feats, mod, mode_ids).cpu().numpy()
+            mode_actions[mode_name] = actions
+
+    mode_pairs = [('crispri', 'crispra'), ('crispri', 'knockout'), ('crispra', 'knockout')]
+    pairwise_distances = {}
+    for m1, m2 in mode_pairs:
+        dists = [np.linalg.norm(mode_actions[m1][i] - mode_actions[m2][i]) for i in range(n_sample)]
+        pairwise_distances[f'{m1}_vs_{m2}'] = {'mean': float(np.mean(dists)), 'std': float(np.std(dists))}
+
+    all_actions = np.concatenate([mode_actions[m] for m in MODES.keys()], axis=0)
+    all_labels = np.array([i for i, m in enumerate(MODES.keys()) for _ in range(n_sample)])
+
+    train_idx, val_idx = train_test_split(np.arange(len(all_actions)), test_size=0.3, random_state=42, stratify=all_labels)
+    _, _, mode_acc = train_linear_classifier(all_actions[train_idx], all_labels[train_idx], all_actions[val_idx], all_labels[val_idx], len(MODES), ctx.device, epochs=100)
+
+    chance = 1.0 / len(MODES)
+    print(f'mode_sensitivity: Classification_acc={mode_acc:.4f} ({mode_acc/chance:.1f}x chance)')
+
+    return {
+        'config': {'n_samples': n_sample, 'modes': list(MODES.keys())},
+        'pairwise_distances': pairwise_distances,
+        'classification': {'accuracy': float(mode_acc), 'chance': float(chance), 'above_chance_ratio': float(mode_acc / chance)}
+    }
+
+
+def _target_family_probing(ctx):
+    '''Do action embeddings encode protein family information?'''
+    with open(ctx.paths['pert_dir'] / 'input_to_id.json') as f:
+        input_to_id = json.load(f)
+
+    id_to_gene = {pid: key.split('_')[0].upper() for key, pid in input_to_id.items()}
+    gene_families = ctx.hgnc_gene_families['by_symbol']
+
+    pert_families = {}
+    for pid, gene in id_to_gene.items():
+        if gene in gene_families:
+            pert_families[pid] = gene_families[gene]
+
+    family_counts = defaultdict(int)
+    for fam in pert_families.values():
+        family_counts[fam] += 1
+    valid_families = {fam for fam, count in family_counts.items() if count >= 5}
+
+    valid_perts = [pid for pid, fam in pert_families.items() if fam in valid_families]
+    if len(valid_perts) < 20:
+        return {'error': f'Not enough perturbations with valid families (found {len(valid_perts)})'}
+
+    family_to_idx = {fam: i for i, fam in enumerate(sorted(valid_families))}
+    n_families = len(family_to_idx)
+    labels = np.array([family_to_idx[pert_families[pid]] for pid in valid_perts])
+
+    dna_actions = ctx.alignment_inference['dna_actions'].cpu().numpy()
+    X = dna_actions[valid_perts]
+
+    train_idx, val_idx = train_test_split(np.arange(len(X)), test_size=0.3, random_state=42, stratify=labels)
+    _, val_preds, val_acc = train_linear_classifier(X[train_idx], labels[train_idx], X[val_idx], labels[val_idx], n_families, ctx.device, epochs=200)
+
+    macro_f1 = f1_score(labels[val_idx], val_preds, average='macro')
+    chance = 1.0 / n_families
+
+    print(f'target_family_probing: Accuracy={val_acc:.4f} ({val_acc/chance:.1f}x chance), Macro_F1={macro_f1:.4f}')
+
+    return {
+        'config': {'n_perturbations': len(valid_perts), 'n_families': n_families, 'train_samples': len(train_idx), 'val_samples': len(val_idx)},
+        'metrics': {'accuracy': float(val_acc), 'macro_f1': float(macro_f1), 'chance': float(chance), 'above_chance_ratio': float(val_acc / chance)}
     }

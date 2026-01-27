@@ -5,7 +5,7 @@ from pathlib import Path
 
 from biojepa_v0_6 import BioJepa, BioJepaConfig
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
-from config_v0_6 import PretrainConfig, AlignmentConfig, FullTrainingConfig, DataConfig, MODALITY_TO_ID, MODE_TO_ID
+from config_v0_6 import PretrainConfig, AlignmentConfig, FullTrainingConfig, DecoderConfig, DataConfig, MODALITY_TO_ID, MODE_TO_ID
 
 
 def create_model(model_cfg: BioJepaConfig, device) -> BioJepa:
@@ -28,6 +28,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
     max_steps = cfg.epochs * steps_per_epoch
     print(f'Pretraining: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
 
+    model.enable_all_gradients()
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=cfg.warmup_pct
@@ -98,6 +99,11 @@ def run_alignment(model, train_loader, val_loader, input_bank, anchor_bank, cfg:
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
     max_steps = cfg.epochs * steps_per_epoch
     print(f'Alignment: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
+
+    for p in model.parameters():
+        p.requires_grad = False
+    for p in model.composer.parameters():
+        p.requires_grad = True
 
     optimizer = torch.optim.AdamW(model.composer.parameters(), lr=cfg.lr)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -183,6 +189,10 @@ def run_full_training(model, train_loader, val_loader, input_bank, cfg: FullTrai
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     model.freeze_encoders()
+    for p in model.predictor.parameters():
+        p.requires_grad = True
+    for p in model.composer.parameters():
+        p.requires_grad = True
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
     max_steps = cfg.epochs * steps_per_epoch
@@ -190,11 +200,11 @@ def run_full_training(model, train_loader, val_loader, input_bank, cfg: FullTrai
 
     optimizer = torch.optim.AdamW([
         {'params': model.predictor.parameters(), 'lr': cfg.predictor_lr},
-        {'params': model.composer.parameters(), 'lr': cfg.composer_lr}
+        {'params': model.composer.parameters(), 'lr': cfg.predictor_lr * 0.1}
     ], weight_decay=cfg.weight_decay)
 
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=[cfg.predictor_lr, cfg.composer_lr], total_steps=max_steps, pct_start=0.05
+        optimizer, max_lr=[cfg.predictor_lr, cfg.predictor_lr * 0.1], total_steps=max_steps, pct_start=0.05
     )
 
     loss_history = []
@@ -257,7 +267,12 @@ def run_full_training(model, train_loader, val_loader, input_bank, cfg: FullTrai
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def train_linear_decoder(model, train_loader, model_cfg: BioJepaConfig, device, checkpoint_dir, epochs=10, lr=1e-3) -> BenchmarkDecoder:
+def train_linear_decoder(model, train_loader, val_loader, input_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig) -> BenchmarkDecoder:
+    '''Train linear decoder on action-conditioned predictions.
+
+    Uses the full prediction pipeline: student encoder -> composer -> predictor.
+    Decoder learns to map latent deltas (z_pred - z_context) to expression deltas (xt - xc).
+    '''
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -265,29 +280,59 @@ def train_linear_decoder(model, train_loader, model_cfg: BioJepaConfig, device, 
     decoder = BenchmarkDecoder(decoder_config).to(device)
 
     steps_per_epoch = train_loader.total_samples // train_loader.batch_size
-    max_steps = epochs * steps_per_epoch
+    max_steps = cfg.epochs * steps_per_epoch
 
-    optimizer = torch.optim.AdamW(decoder.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=max_steps, pct_start=0.05)
+    optimizer = torch.optim.AdamW(decoder.parameters(), lr=cfg.lr)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05)
 
     loss_fn = nn.MSELoss()
     loss_history = []
 
     model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
     decoder.train()
 
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
 
-        xc, xct, xt, xtt, *_ = train_loader.next_batch()
+        if step % 100 == 0 or last_step:
+            decoder.eval()
+            with torch.no_grad():
+                val_loss_accum = 0.0
+                val_loss_steps = 10
+                for _ in range(val_loss_steps):
+                    xc, xct, xt, xtt, p_idx, p_mod, p_mode = val_loader.next_batch()
+                    p_feats = input_bank[p_idx]
+                    B, N = xc.shape
+
+                    z_context = model.student(xc, xct, mask_idx=None)
+                    action_latents = model.composer(p_feats, p_mod, p_mode)
+                    target_indices = torch.arange(N, device=device).expand(B, N)
+                    z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
+
+                    pred_delta = decoder(z_pred_mu) - decoder(z_context)
+                    real_delta = xt - xc
+                    val_loss = loss_fn(pred_delta, real_delta)
+                    val_loss_accum += val_loss.item()
+                avg_val_loss = val_loss_accum / val_loss_steps
+                print(f'Decoder Step {step} | val loss: {avg_val_loss:.4f}')
+            decoder.train()
+
+        xc, xct, xt, xtt, p_idx, p_mod, p_mode = train_loader.next_batch()
+        p_feats = input_bank[p_idx]
+        B, N = xc.shape
 
         with torch.no_grad():
-            target_latents = model.teacher(xt, xtt)
-
-        pred_x = decoder(target_latents)
-        loss = loss_fn(pred_x, xt)
+            z_context = model.student(xc, xct, mask_idx=None)
+            action_latents = model.composer(p_feats, p_mod, p_mode)
+            target_indices = torch.arange(N, device=device).expand(B, N)
+            z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
 
         optimizer.zero_grad()
+        pred_delta = decoder(z_pred_mu) - decoder(z_context)
+        real_delta = xt - xc
+        loss = loss_fn(pred_delta, real_delta)
         loss.backward()
         optimizer.step()
         scheduler.step()

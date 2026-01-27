@@ -116,8 +116,6 @@ class CellStateBlock(nn.Module):
 class PredictorBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.config = config
-
         self.ln_1 = nn.LayerNorm(config.embed_dim)
         self.action_attn = BioLinearAttention(config)
 
@@ -443,6 +441,16 @@ class BioJepa(nn.Module):
     def freeze_encoders(self):
         for p in self.student.parameters():
             p.requires_grad = False
+
+    def enable_all_gradients(self):
+        for p in self.student.parameters():
+            p.requires_grad = True
+        for p in self.masked_predictor.parameters():
+            p.requires_grad = True
+        for p in self.composer.parameters():
+            p.requires_grad = True
+        for p in self.predictor.parameters():
+            p.requires_grad = True
 
     def vicreg_loss(self, x, y):
         B = x.shape[0]

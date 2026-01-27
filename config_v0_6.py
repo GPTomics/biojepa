@@ -22,15 +22,21 @@ class AlignmentConfig:
 class FullTrainingConfig:
     epochs: int = 10
     predictor_lr: float = 1e-3
-    composer_lr: float = 1e-4
     batch_size: int = 32
     weight_decay: float = 0.05
+
+
+@dataclass
+class DecoderConfig:
+    epochs: int = 10
+    lr: float = 1e-3
 
 
 @dataclass
 class DataConfig:
     data_root: Path
     checkpoint_dir: Path
+    eval_results_dir: Path = None
     input_bank_path: Path = None
     anchor_bank_path: Path = None
 

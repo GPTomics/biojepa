@@ -11,7 +11,14 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 - `gene_embedding_pathways`: Do genes in same pathway cluster together?
 - `essential_gene_prediction`: Do gene embeddings encode functional importance?
 
-**Full Model Evals** (run after stage 2/3):
+**Alignment Evals** (run after stage 2 - alignment):
+- `alignment_recall`: Can we retrieve correct protein from DNA query?
+- `modality_gap_analysis`: Do DNA/Protein cluster separately in action space?
+- `anchor_input_consistency`: For same gene, do DNA/Protein produce similar actions?
+- `mode_sensitivity`: Does FiLM conditioning on mode change embeddings?
+- `target_family_probing`: Do action embeddings encode protein family?
+
+**Full Model Evals** (run after stage 3 - full training):
 - `expression_prediction`: Can we predict gene expression after perturbation?
 - `gene_level_analysis`: Direction of effect + top DEG recovery
 - `perturbation_retrieval`: Given desired outcome, find the perturbation
@@ -159,6 +166,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 | Monotonicity Score | Sample | % of bins where error increases with uncertainty |
 | Pert-Level Pearson | Perturbation | Correlation at perturbation level |
 | Pert-Level Spearman | Perturbation | Rank correlation at perturbation level |
+| bin_mean_errors | Sample | Mean error in each uncertainty bin (for plotting calibration curves) |
 
 **How to interpret**:
 
@@ -351,7 +359,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 ---
 
 ### cell_type_probing
-**Notebook**: `cell_type_probing.ipynb` (or via `evals.py`)
+**Implementation**: `evals/evals.py`
 
 **Biological question**: Does the encoder disentangle biological cell state from noise?
 
@@ -384,7 +392,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 ---
 
 ### reconstruction
-**Notebook**: `reconstruction.ipynb` (or via `evals.py`)
+**Implementation**: `evals/evals.py`
 
 **Biological question**: Does the encoder preserve fine-grained expression information, or does VICReg wash it out?
 
@@ -416,7 +424,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 ---
 
 ### perturbation_detection
-**Notebook**: `perturbation_detection.ipynb` (or via `evals.py`)
+**Implementation**: `evals/evals.py`
 
 **Biological question**: Is the perturbation signal preserved in the latent space, or has VICReg washed it out as "noise"?
 
@@ -447,7 +455,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 ---
 
 ### embedding_consistency
-**Notebook**: `embedding_consistency.ipynb` (or via `evals.py`)
+**Implementation**: `evals/evals.py`
 
 **Biological question**: Do replicates of the same perturbation cluster tightly in embedding space?
 
@@ -478,7 +486,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 ---
 
 ### latent_space_health
-**Notebook**: `latent_space_health.ipynb` (or via `evals.py`)
+**Implementation**: `evals/evals.py`
 
 **Biological question**: Is the embedding space well-structured? Are there degenerate or collapsed dimensions?
 
@@ -511,6 +519,169 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 - This is a diagnostic eval - use it to debug training issues
 
 **Data requirements**: Existing data only.
+
+---
+
+### alignment_recall
+**Implementation**: `evals/evals.py`
+
+**Biological question**: Can we retrieve the correct protein anchor from a DNA (sgRNA) query in the action space?
+
+**Setup**: After alignment training, DNA embeddings and protein embeddings should be aligned in the action space. For each DNA perturbation, compute cosine similarity to all protein embeddings and find the rank of the correct anchor.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| MRR | Mean Reciprocal Rank - average of 1/rank |
+| Median Rank | Typical rank of correct protein |
+| Mean Rank | Average rank of correct protein |
+| Recall@K | Is correct protein in top K? |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| MRR | > 0.6 | 0.3 - 0.6 | < 0.3 | 1.0 = always rank 1 |
+| Recall@10 | > 0.8 | 0.5 - 0.8 | < 0.5 | Correct protein in top 10 |
+| Median Rank | < 5 | 5 - 50 | > 50 | Lower is better |
+
+**Interpretation guide**:
+- High MRR means DNA and protein embeddings for the same gene are close in action space
+- This is the core test of alignment training success
+- Poor recall suggests the InfoNCE loss didn't align the modalities effectively
+- Note: Multiple DNA sequences may map to the same protein anchor
+
+**Data requirements**: `pert_pairs_crispri_train.npz` containing input_idx, anchor_idx pairs.
+
+---
+
+### modality_gap_analysis
+**Implementation**: `evals/evals.py`
+
+**Biological question**: Do DNA and Protein embeddings form separate clusters in action space, or are they well-mixed?
+
+**Setup**: Compute action vectors for all DNA and protein embeddings. Measure centroid distance and pairwise distances within and between modalities.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Centroid Distance | Euclidean distance between DNA and protein centroids |
+| DNA Variance | Average squared distance from DNA centroid |
+| Protein Variance | Average squared distance from protein centroid |
+| Gap Ratio | Mean between-modality distance / mean within-modality distance |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Gap Ratio | < 1.5 | 1.5 - 3.0 | > 3.0 | Lower = better mixing |
+| Centroid Distance | Context-dependent | - | - | Compare to within-modality spread |
+
+**Interpretation guide**:
+- Gap ratio < 1.5 means modalities overlap well in action space
+- Gap ratio > 3.0 suggests alignment failed - modalities form separate clusters
+- Some separation is expected due to different input dimensionalities
+- The goal is that same-gene DNA/protein pairs are closer than different-gene pairs
+
+**Data requirements**: Existing embeddings only.
+
+---
+
+### anchor_input_consistency
+**Implementation**: `evals/evals.py`
+
+**Biological question**: For the same target gene, do DNA (sgRNA) and Protein embeddings produce similar action vectors?
+
+**Setup**: For each (DNA, Protein) pair targeting the same gene, compute cosine similarity between their action vectors.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Mean Cosine Similarity | Average similarity between paired DNA/protein action vectors |
+| Std Cosine Similarity | Spread of similarities |
+| Percentiles | Distribution (5th, 25th, 50th, 75th, 95th) |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Mean Cosine Sim | > 0.8 | 0.5 - 0.8 | < 0.5 | Higher = better alignment |
+
+**Interpretation guide**:
+- High similarity means the action composer projects both modalities to similar latent actions for the same gene
+- This is what enables cross-modality prediction: train on CRISPR, predict for protein perturbations
+- Low similarity suggests the composer treats modalities too differently
+- Tight distribution (low std) is good - all pairs should align similarly
+
+**Data requirements**: `pert_pairs_crispri_train.npz` containing input_idx, anchor_idx pairs.
+
+---
+
+### mode_sensitivity
+**Implementation**: `evals/evals.py`
+
+**Biological question**: Does FiLM conditioning on perturbation mode (CRISPRi, CRISPRa, knockout) change the embeddings appropriately?
+
+**Setup**: Pass the same DNA embeddings through the composer with different mode values. Measure how much the action vectors differ across modes.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Pairwise Distances | L2 distance between same-input actions under different modes |
+| Classification Accuracy | Can a linear classifier predict mode from action vector? |
+| Above Chance Ratio | Accuracy / (1 / n_modes) |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Classification Accuracy | 0.4 - 0.7 | 0.35 - 0.4 or 0.7 - 0.9 | < 0.35 or > 0.9 | Moderate sensitivity is ideal |
+| Above Chance Ratio | 1.2 - 2.1x | - | < 1.2x or > 2.7x | Should be meaningfully above chance but not perfect |
+
+**Interpretation guide**:
+- We want moderate mode sensitivity: the mode SHOULD affect the action vector since CRISPRi (knockdown) and CRISPRa (activation) have opposite effects
+- Too low accuracy (near chance) means FiLM conditioning is not working
+- Too high accuracy (near perfect) suggests mode dominates over the perturbation identity, which would hurt prediction quality
+- The sweet spot is where mode contributes meaningfully but doesn't overwhelm
+
+**Data requirements**: Existing embeddings only.
+
+---
+
+### target_family_probing
+**Implementation**: `evals/evals.py`
+
+**Biological question**: Do action embeddings encode protein family information about the target gene?
+
+**Setup**: Map perturbations to their target genes, then to HGNC protein families. Train a linear classifier on action vectors to predict family membership.
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Accuracy | Fraction correctly classified |
+| Macro F1 | F1 score averaged across families |
+| Chance | 1 / n_families |
+| Above Chance Ratio | Accuracy / chance |
+
+**How to interpret**:
+
+| Metric | Good | Average | Poor | Notes |
+|--------|------|---------|------|-------|
+| Above Chance Ratio | > 3x | 1.5 - 3x | < 1.5x | Higher = more family structure |
+| Macro F1 | > 0.2 | 0.1 - 0.2 | < 0.1 | Depends on n_families |
+
+**Interpretation guide**:
+- High accuracy means perturbations targeting genes in the same protein family have similar action vectors
+- This tests whether the action space encodes biological relationships beyond just perturbation identity
+- Protein families share structural/functional properties, so similar action vectors suggest biologically meaningful embeddings
+- Note: Many genes don't have family annotations, so sample size may be limited
+
+**Data requirements**: HGNC gene family annotations from `/Users/djemec/data/jepa/reference_data/gene_family/hgnc.tsv`.
 
 ---
 
@@ -558,6 +729,25 @@ These evaluations require additional data or architectural changes and are not c
 
 ---
 
+### cross_modality_retrieval
+**Status**: On Hold - requires chemical embeddings
+
+**Biological question**: Given a drug embedding, can we retrieve the corresponding CRISPR knockout targeting the same pathway/mechanism?
+
+**Setup**:
+- Embed chemicals using MolBERT or ChemBERT
+- For each chemical perturbation, find nearest CRISPR knockouts in action space
+- Measure if compounds and knockouts targeting same genes/pathways are retrieved
+
+**What's needed**:
+- Chemical perturbation data with known targets
+- Chemical embeddings (MolBERT, ChemBERT, or similar)
+- Mapping between chemicals and their target genes/pathways
+
+**Story**: This would validate that the action space truly captures biological mechanism, not just modality-specific features. A drug inhibiting gene X should have a similar action vector to CRISPR knockout of gene X.
+
+---
+
 ## Implementation Summary
 
 | Eval | Stage | Notebook | Biological Question | Key Metrics |
@@ -576,8 +766,14 @@ These evaluations require additional data or architectural changes and are not c
 | perturbation_detection | Pretrain | evals.py | Perturbation signal survival | AUROC |
 | embedding_consistency | Pretrain | evals.py | Replicate clustering quality | Inter/Intra ratio |
 | latent_space_health | Pretrain | evals.py | VICReg training diagnostics | Effective dim, Isotropy |
+| alignment_recall | Alignment | evals.py | DNA-Protein retrieval | MRR, Recall@K |
+| modality_gap_analysis | Alignment | evals.py | Modality separation in action space | Gap ratio |
+| anchor_input_consistency | Alignment | evals.py | Same-gene cross-modality similarity | Cosine similarity |
+| mode_sensitivity | Alignment | evals.py | FiLM conditioning effect | Classification acc |
+| target_family_probing | Alignment | evals.py | Protein family in action embeddings | Accuracy, F1 |
 | cross_cell_type_transfer | - | - | Cross-cell-type transfer | On Hold |
 | synthetic_lethality_signal | - | - | Synthetic lethality detection | On Hold |
+| cross_modality_retrieval | - | - | Chemical-CRISPR retrieval | On Hold (needs chemical embeddings) |
 
 ---
 
@@ -590,6 +786,5 @@ These evaluations require additional data or architectural changes and are not c
 | KEGG/Reactome pathways | gseapy | gene_embedding_pathways, action_vector_pathways, moa_matching | Done |
 | DepMap K562 CRISPR | DepMap API | essential_gene_prediction | Done |
 | Cell type labels | Add to shards | cell_type_probing | Pending (v0.6) |
-| cell_type_to_id.json | Data prep | cell_type_probing | Pending (v0.6) |
 | Replogle RPE1 | GEARS/GEO | cross_cell_type_transfer | Pending |
 | SynLethDB | Public database | synthetic_lethality_signal | Pending |
