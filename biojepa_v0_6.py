@@ -167,7 +167,7 @@ class MaskedPredictor(nn.Module):
 class ActionComposerConfig:
     dna_dim: int = 1536
     protein_dim: int = 320
-    chemical_dim: int = 768
+    chemical_dim: int = 1024
     target_dim: int = 320
     latent_dim: int = 320
     mode_dim: int = 64
