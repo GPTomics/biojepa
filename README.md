@@ -65,9 +65,22 @@ v0.1 removed due to data leakage. Extended evals (rows without bold) available f
 
 ## To DO Architecture
 
-1. Add other perturbations beside CRISPRi
+1. ~~Add other perturbations beside CRISPRi~~ (v0.6)
 2. Expanded our dataset to include  other CRISPRi datasets including Replogle K562 Essential, Replogle K562 genome-wide, Replogle RPE1 essential, and Adamson - CRISPRi.  We're sticking with CRISPRi in this dataset but in the future version will add handling for different types (TBD how we do that).
-3. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set. 
+3. Increase the number of genes to 8,192 in our gradual increase towards a mostly full set.
+
+## v0.6 Architecture (In Progress)
+
+**Training:** TBD. Config: embd=256, heads=4, layers=6, lat_dim=320, mod_dim=64, max_perts=4.
+
+1. **Dual-Pathway Perturbation Encoding with Sequence-Target Fusion:** The ActionComposer now separately encodes the perturbation sequence (sgRNA, protein, or chemical) and its biological target (always a protein), then fuses them when both are available. Sequences are projected through modality-specific encoders (DNA via NucleotideTransformer: 1536->D, protein via ESM-2: 320->D, chemical via ChemBERT: 768->D). Targets are projected through a dedicated protein encoder. When both sequence and target are available, they are concatenated and passed through a fusion MLP. When only one is available, it passes through directly. A learned unknown embedding handles cases where neither is available.
+    1. Benefit: Cleanly separates "what is perturbing" (sequence) from "what is being perturbed" (target), enabling alignment training that learns the relationship between sequences and their targets. This architecture gracefully handles variable data availability across different perturbation types and datasets.
+2. **Multi-Perturbation Support via Cross-Attention:** The model now handles up to 4 simultaneous perturbations per sample. Each perturbation produces an action token, and the ACPredictor cross-attends to all perturbation tokens when predicting the perturbed cell state.
+    1. Benefit: Enables modeling of combinatorial perturbations (e.g., dual CRISPRi, drug combinations) which are common in real experiments. The cross-attention mechanism allows the model to learn non-linear interaction effects between perturbations.
+3. **Unified Mode Vocabulary for All Perturbation Effects:** Expanded mode conditioning to cover genetic and chemical perturbation types: CRISPRi (0), CRISPRa (1), overexpression (2), knockout (3), inhibitor (4), agonist (5), degrader (6), binder (7), unknown (8). Mode is applied via FiLM conditioning after sequence-target fusion.
+    1. Benefit: Provides a principled way to encode that the same target can be affected differently depending on the perturbation mechanism. For example, a CRISPRi knockdown vs a small molecule inhibitor targeting the same protein will have different cellular effects.
+4. **Attention-Based Pooling for Alignment Training:** Added a learned attention pooling mechanism that combines multiple perturbation action vectors into a single vector for contrastive alignment. A learned query attends to all perturbation tokens with masking for variable-length inputs.
+    1. Benefit: Enables alignment training on multi-perturbation samples while maintaining the ability to learn from single-perturbation data. The attention mechanism learns which perturbations are most informative for alignment.
 
 ## v0.5 Architecture
 
@@ -126,12 +139,12 @@ The main updates were:
 
 Encoders use Pre-Norm Transformer with RoPE. Predictor uses DiT-style blocks with AdaLN conditioning on the perturbation vector.
 
-### Future Datasets
+## Future Datasets
 
 | **Dataset** | **Type** | **Cell Lines** | **Value Add** |
 | - | - | - | - |
 | **Replogle K562** | CRISPRi | K562 (Leukemia) | **Baseline:** Deep coverage of cancer biology |
 | **Replogle RPE1** | CRISPRi | RPE1 (Retinal) | **Generalization:** Non-cancer, normal karyotype |
 | **Norman 2019** | CRISPRa (Dual) | K562 | **Physics:** Non-linear gene interactions ($A+B \neq A+B$) |
-| **sci-Plex (Srivatsan)** | Chemical | A549, MCF7, K562 | **Chemistry:** Drug-to-gene-state mapping (650k cells) |
+| **sciPlex (Srivatsan)** | Chemical | A549, MCF7, K562 | **Chemistry:** Drug-to-gene-state mapping (650k cells) |
 | **Adamson 2016** | CRISPRi | K562 | **Stress:** High-resolution toxicity pathways |
