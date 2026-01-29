@@ -173,6 +173,7 @@ class ActionComposerConfig:
     mode_dim: int = 64
     num_modes: int = 9
     max_perts: int = 4
+    heads: int = None
 
 class ActionComposer(nn.Module):
     def __init__(self, config):
@@ -214,12 +215,7 @@ class ActionComposer(nn.Module):
 
         # Attention pooling for alignment (query is learned)
         self.pool_query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
-        self.pool_attn = nn.MultiheadAttention(D, num_heads=4, batch_first=True)
-
-    def _encode_sequence(self, seq_emb, modality_id):
-        key = self.modality_to_key[modality_id.item() if modality_id.dim() == 0 else modality_id[0].item()]
-        proj = self.seq_projectors[key]
-        return proj(seq_emb[..., :proj.in_features])
+        self.pool_attn = nn.MultiheadAttention(D, num_heads=config.heads, batch_first=True)
 
     def _encode_target(self, target_emb):
         return self.target_projector(target_emb)
@@ -566,7 +562,8 @@ class BioJepa(nn.Module):
         # Action Composer
         composer_conf = ActionComposerConfig(
             latent_dim=config.pert_latent_dim,
-            mode_dim=config.pert_mode_dim
+            mode_dim=config.pert_mode_dim,
+            heads=config.heads
         )
         self.composer = ActionComposer(composer_conf)
 

@@ -117,6 +117,6 @@ def get_pathway_summary(pathway_to_genes, top_n=20):
         'total_pathways': len(pathway_to_genes),
         'total_genes_covered': sum(len(g) for g in pathway_to_genes.values()),
         'top_pathways': sizes[:top_n],
-        'mean_pathway_size': np.mean([s[1] for s in sizes]) if sizes else 0,
-        'median_pathway_size': np.median([s[1] for s in sizes]) if sizes else 0
+        'mean_pathway_size': float(np.mean([s[1] for s in sizes])) if sizes else 0.0,
+        'median_pathway_size': float(np.median([s[1] for s in sizes])) if sizes else 0.0
     }

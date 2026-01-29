@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import numpy as np
 from sklearn.metrics import accuracy_score
 from dataclasses import dataclass
 

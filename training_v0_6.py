@@ -186,7 +186,7 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
     for p in model.composer.parameters():
         p.requires_grad = True
 
-    optimizer = torch.optim.AdamW(model.composer.parameters(), lr=cfg.lr)
+    optimizer = torch.optim.AdamW(model.composer.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05
     )

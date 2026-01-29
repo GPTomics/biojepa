@@ -61,39 +61,20 @@ Beyond therapeutics, the model's learned representations enable biological disco
 | Essential AUROC | **0.741** | 0.707 | — | — |
 | Essential Pearson | **0.408** | 0.275 | — | — |
 
-v0.1 removed due to data leakage. Extended evals (rows without bold) available for v0.4+.
-
-## To DO Architecture
-
-1. ~~Add other perturbations beside CRISPRi~~ (v0.6 - CRISPRa and chemical perturbations added)
-2. ~~Expanded our dataset to include other CRISPRi datasets~~ (v0.6 - 6 datasets: K562 Essential, K562 Genome-Wide, RPE1 Essential, Adamson, Norman, sciPlex)
-3. ~~Increase the number of genes to 8,192~~ (v0.6 - increased to 16,384 genes)
-4. Phase 3: Update training loops and implement 9 new alignment evals for dual-path architecture
+Extended evals (rows without bold) available for v0.4+.
 
 ## v0.6 Architecture (In Progress)
 
-**Training:** TBD. Config: embd=256, heads=4, layers=6, lat_dim=320, mod_dim=64, max_perts=4.
+**Training:** 6 datasets (~5.5M cells), 16,384 genes. Config: embd=256, heads=4, layers=6, lat_dim=320, mod_dim=64, max_perts=4.
 
-**Datasets:** 6 datasets (~5.5M cells), 16,384 genes tracked.
-| Dataset | Cells | Perturbation Type | Cell Type |
-|---------|-------|-------------------|-----------|
-| Replogle K562 Essential | ~310K | CRISPRi (dual sgRNA) | K562 |
-| Replogle RPE1 Essential | ~2.3M | CRISPRi (dual sgRNA) | RPE1 |
-| Replogle K562 Genome-Wide | ~2M | CRISPRi (dual sgRNA) | K562 |
-| Adamson 2016 | ~100K | CRISPRi (single sgRNA) | K562 |
-| Norman 2019 | ~100K | CRISPRa (dual gene) | K562 |
-| sciPlex | ~650K | Chemical (drugs + dose) | A549, MCF7, K562 |
-
-1. **Dual-Pathway Perturbation Encoding with Sequence-Target Fusion:** The ActionComposer now separately encodes the perturbation sequence (sgRNA, protein, or chemical) and its biological target (always a protein), then fuses them when both are available. Sequences are projected through modality-specific encoders (DNA via NucleotideTransformer: 1536->D, protein via ESM-2: 320->D, chemical via ChemMRL: 1024->D). Targets are projected through a dedicated protein encoder. When both sequence and target are available, they are concatenated and passed through a fusion MLP. When only one is available, it passes through directly. A learned unknown embedding handles cases where neither is available.
-    1. Benefit: Cleanly separates "what is perturbing" (sequence) from "what is being perturbed" (target), enabling alignment training that learns the relationship between sequences and their targets. This architecture gracefully handles variable data availability across different perturbation types and datasets.
-2. **Multi-Perturbation Support via Cross-Attention:** The model now handles up to 4 simultaneous perturbations per sample. Each perturbation produces an action token, and the ACPredictor cross-attends to all perturbation tokens when predicting the perturbed cell state.
-    1. Benefit: Enables modeling of combinatorial perturbations (e.g., dual CRISPRi, drug combinations) which are common in real experiments. The cross-attention mechanism allows the model to learn non-linear interaction effects between perturbations.
-3. **Unified Mode Vocabulary for All Perturbation Effects:** Expanded mode conditioning to cover genetic and chemical perturbation types: CRISPRi (0), CRISPRa (1), overexpression (2), knockout (3), inhibitor (4), agonist (5), degrader (6), binder (7), unknown (8). Mode is applied via FiLM conditioning after sequence-target fusion.
-    1. Benefit: Provides a principled way to encode that the same target can be affected differently depending on the perturbation mechanism. For example, a CRISPRi knockdown vs a small molecule inhibitor targeting the same protein will have different cellular effects.
-4. **Attention-Based Pooling for Alignment Training:** Added a learned attention pooling mechanism that combines multiple perturbation action vectors into a single vector for contrastive alignment. A learned query attends to all perturbation tokens with masking for variable-length inputs.
-    1. Benefit: Enables alignment training on multi-perturbation samples while maintaining the ability to learn from single-perturbation data. The attention mechanism learns which perturbations are most informative for alignment.
-5. **Expanded Multi-Dataset Data Pipeline:** Built a unified data preparation pipeline that processes 6 diverse perturbation datasets into a common format. Each sample includes: expression data (control + case), perturbation indices (seq_idx, target_idx), metadata (modality, mode, has_seq, has_target, n_perts, dose), and batch/cell-type identifiers. Shards are split by perturbation to ensure no leakage between train/val/test.
-    1. Benefit: Enables training on heterogeneous perturbation data with proper handling of missing information (e.g., chemicals without known targets, sgRNAs without protein mappings). The standardized format supports all perturbation types through the same data loading infrastructure.
+1. **Dual-Pathway Perturbation Encoding with Sequence-Target Fusion:** The ActionComposer separately encodes the perturbation sequence (sgRNA, protein, or chemical) and its biological target (protein), then fuses them via concat+MLP when both are available. Sequences use modality-specific projectors (DNA via [NucleotideTransformer](https://huggingface.co/InstaDeepAI/NTv3_650M_pre): 1536->D, protein via [ESM-2](https://huggingface.co/facebook/esm2_t6_8M_UR50D): 320->D, chemical via [ChemMRL](https://huggingface.co/Derify/ChemMRL): 1024->D). When only one input is available, it passes through directly; a learned unknown embedding handles missing data.
+    1. Benefit: Cleanly separates "what is perturbing" (sequence) from "what is being perturbed" (target), enabling alignment training between sequences and targets while gracefully handling variable data availability across perturbation types.
+2. **Multi-Perturbation Support via Cross-Attention:** The model handles up to 4 simultaneous perturbations per sample. Each perturbation produces an action token, and the ACPredictor cross-attends to all action tokens when predicting the perturbed cell state.
+    1. Benefit: Enables modeling of combinatorial perturbations (dual CRISPRi, drug combinations) and learning non-linear interaction effects between perturbations.
+3. **Expanded Mode Vocabulary:** Mode conditioning now covers genetic and chemical perturbation types: CRISPRi (0), CRISPRa (1), overexpression (2), knockout (3), inhibitor (4), agonist (5), degrader (6), binder (7), unknown (8). Mode is applied via FiLM conditioning after sequence-target fusion.
+    1. Benefit: Encodes that the same target can be affected differently depending on the perturbation mechanism (e.g., CRISPRi knockdown vs small molecule inhibitor targeting the same protein).
+4. **Attention Pooling for Alignment:** A learned attention pooling mechanism combines multiple action vectors into a single vector for contrastive alignment training. A learned query attends to all perturbation tokens with masking for variable-length inputs.
+    1. Benefit: Enables alignment training on multi-perturbation samples while learning which perturbations are most informative for alignment.
 
 ## v0.5 Architecture
 

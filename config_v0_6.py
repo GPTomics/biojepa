@@ -16,6 +16,7 @@ class AlignmentConfig:
     epochs: int = 1000
     lr: float = 4e-3
     batch_size: int = 32
+    weight_decay: float = 0.05
 
 
 @dataclass
@@ -37,14 +38,12 @@ class DataConfig:
     data_root: Path
     checkpoint_dir: Path
     eval_results_dir: Path = None
-    input_bank_path: Path = None
-    anchor_bank_path: Path = None
 
 
 MODALITY_TO_ID = {
-    'protein': 0,
-    'chemical': 1,
-    'dna': 2
+    'dna': 0,
+    'protein': 1,
+    'chemical': 2
 }
 
 MODE_TO_ID = {
@@ -56,6 +55,5 @@ MODE_TO_ID = {
     'agonist': 5,
     'degrader': 6,
     'binder': 7,
-    'control': 8,
-    'unknown': 9
+    'unknown': 8
 }
