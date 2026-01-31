@@ -101,9 +101,13 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
-    max_steps = cfg.epochs * steps_per_epoch
+    if cfg.epochs is not None:
+        max_steps = cfg.epochs * steps_per_epoch
+    elif cfg.n_steps is not None:
+        max_steps = cfg.n_steps
+    else:
+        raise ValueError('Either epochs or n_steps must be specified')
     print(f'Pretraining: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
-
     model.enable_all_gradients()
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -121,7 +125,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 10
+                val_loss_steps = 25
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
                     val_loss = model.forward_pretrain(b.x, b.total)
@@ -178,7 +182,12 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
-    max_steps = cfg.epochs * steps_per_epoch
+    if cfg.epochs is not None:
+        max_steps = cfg.epochs * steps_per_epoch
+    elif cfg.n_steps is not None:
+        max_steps = cfg.n_steps
+    else:
+        raise ValueError('Either epochs or n_steps must be specified')
     print(f'Alignment: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
 
     for p in model.parameters():
@@ -201,7 +210,7 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 10
+                val_loss_steps = 25
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
                     B = b.seq_idx.shape[0]
@@ -260,7 +269,12 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         p.requires_grad = True
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
-    max_steps = cfg.epochs * steps_per_epoch
+    if cfg.epochs is not None:
+        max_steps = cfg.epochs * steps_per_epoch
+    elif cfg.n_steps is not None:
+        max_steps = cfg.n_steps
+    else:
+        raise ValueError('Either epochs or n_steps must be specified')
     print(f'Full training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
 
     optimizer = torch.optim.AdamW([
@@ -283,7 +297,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 10
+                val_loss_steps = 25
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
 
@@ -354,7 +368,12 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
     decoder = BenchmarkDecoder(decoder_config).to(device)
 
     steps_per_epoch = train_loader.total_samples // train_loader.batch_size
-    max_steps = cfg.epochs * steps_per_epoch
+    if cfg.epochs is not None:
+        max_steps = cfg.epochs * steps_per_epoch
+    elif cfg.n_steps is not None:
+        max_steps = cfg.n_steps
+    else:
+        raise ValueError('Either epochs or n_steps must be specified')
 
     optimizer = torch.optim.AdamW(decoder.parameters(), lr=cfg.lr)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05)
@@ -374,7 +393,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
             decoder.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 10
+                val_loss_steps = 25
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
                     B, N = b.control.shape

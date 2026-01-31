@@ -4,33 +4,37 @@ from pathlib import Path
 
 @dataclass
 class PretrainConfig:
-    epochs: int = 10
+    epochs: int = None #10
     lr: float = 1e-3
     batch_size: int = 32
     warmup_pct: float = 0.05
     weight_decay: float = 0.05
+    n_steps: int = None
 
 
 @dataclass
 class AlignmentConfig:
-    epochs: int = 1000
+    epochs: int = None #1000
     lr: float = 4e-3
     batch_size: int = 32
     weight_decay: float = 0.05
+    n_steps: int = None
 
 
 @dataclass
 class FullTrainingConfig:
-    epochs: int = 10
+    epochs: int = None #10
     predictor_lr: float = 1e-3
     batch_size: int = 32
     weight_decay: float = 0.05
+    n_steps: int = None
 
 
 @dataclass
 class DecoderConfig:
-    epochs: int = 10
+    epochs: int = None #10
     lr: float = 1e-3
+    n_steps: int = None
 
 
 @dataclass
