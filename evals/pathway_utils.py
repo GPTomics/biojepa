@@ -3,6 +3,7 @@ from collections import defaultdict
 from sklearn.metrics import silhouette_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import cross_val_score
 
 PATHWAY_CACHE = {}
 
@@ -95,14 +96,15 @@ def compute_pathway_clustering_metrics(embeddings, labels, min_samples_per_class
 
     sil_score = silhouette_score(filtered_embeddings, filtered_labels)
 
-    knn = KNeighborsClassifier(n_neighbors=min(5, min_samples_per_class - 1), metric='cosine')
-    knn.fit(filtered_embeddings, filtered_labels)
-    knn_preds = knn.predict(filtered_embeddings)
-    knn_acc = np.mean(knn_preds == filtered_labels)
+    k = min(5, min_samples_per_class - 1)
+    knn = KNeighborsClassifier(n_neighbors=k, metric='cosine')
+    cv_scores = cross_val_score(knn, filtered_embeddings, filtered_labels, cv=5)
+    knn_acc = float(np.mean(cv_scores))
 
     return {
         'silhouette_score': float(sil_score),
-        'knn_accuracy': float(knn_acc),
+        'knn_accuracy': knn_acc,
+        'knn_std': float(np.std(cv_scores)),
         'n_classes': len(valid_classes),
         'n_samples': len(filtered_embeddings)
     }

@@ -11,7 +11,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 - `gene_embedding_pathways`: Do genes in same pathway cluster together?
 - `essential_gene_prediction`: Do gene embeddings encode functional importance?
 
-**Alignment Evals** (run after stage 2 - alignment, 9 evals for v0.6 dual-path architecture):
+**Alignment Evals** (run after stage 2 - alignment):
 - `seq_to_target_retrieval`: Per-modality retrieval - DNA/chemical -> protein target (MRR, Recall@K)
 - `cross_modality_target_consistency`: Do different sequences targeting same protein produce similar actions?
 - `seq_target_gap_analysis`: Per-modality gap between sequence and target spaces
@@ -526,7 +526,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
-### seq_to_target_retrieval (v0.6)
+### seq_to_target_retrieval
 **Implementation**: `evals/evals.py`
 
 **Biological question**: For each modality, can we retrieve the correct protein target from a sequence query?
@@ -556,37 +556,37 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
-### cross_modality_target_consistency (v0.6, NEW)
+### cross_modality_target_consistency
 **Implementation**: `evals/evals.py`
 
-**Biological question**: Do different sequences targeting the same protein produce similar action vectors?
+**Biological question**: Do different DNA sequences targeting the same protein produce similar action vectors?
 
-**Setup**: Find proteins targeted by multiple sequence modalities (e.g., both sgRNA and drug). Compare action vectors from different sequence modalities targeting the same protein.
+**Setup**: Find proteins targeted by multiple DNA sequences. Compare action vectors from different sequences targeting the same protein.
 
 **Metrics**:
 
 | Metric | Description |
 |--------|-------------|
-| Within-Modality Consistency | Similarity of actions from same modality, same target |
-| Cross-Modality Consistency | Similarity of actions from different modalities, same target |
-| Seq-to-Target Consistency | How similar are seq-only actions to target-only actions? |
+| Within-Target Similarity | Mean cosine similarity of actions targeting same protein |
+| Between-Target Similarity | Mean cosine similarity of actions targeting different proteins |
+| Similarity Ratio | Within / Between ratio |
 
 **How to interpret**:
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Cross-Modality Consistency | > 0.6 | 0.3 - 0.6 | < 0.3 | Higher = better cross-modal alignment |
+| Similarity Ratio | > 1.5 | 1.1 - 1.5 | < 1.1 | Higher = better target consistency |
 
 **Interpretation guide**:
-- If two drugs target HDAC, their action vectors should be similar
-- High cross-modality consistency enables transfer from CRISPR to drug predictions
-- This tests whether the action space captures biological mechanism, not just modality
+- If two sgRNAs target the same gene, their action vectors should be similar
+- High within-target consistency validates that the action space captures target identity
+- This tests whether the sequence encoder learns target-related features
 
-**Data requirements**: Alignment pairs with multiple modalities per target.
+**Data requirements**: Alignment pairs with multiple sequences per target.
 
 ---
 
-### seq_target_gap_analysis (v0.6)
+### seq_target_gap_analysis
 **Implementation**: `evals/evals.py`
 
 **Biological question**: What is the gap between sequence and target representation spaces per modality?
@@ -615,7 +615,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
-### paired_alignment_quality (v0.6)
+### paired_alignment_quality
 **Implementation**: `evals/evals.py`
 
 **Biological question**: For known sequence-target pairs, how well do they align?
@@ -644,7 +644,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
-### mode_sensitivity (v0.6, UPDATED)
+### mode_sensitivity
 **Implementation**: `evals/evals.py`
 
 **Biological question**: Does FiLM conditioning on perturbation mode differentiate effects appropriately?
@@ -676,74 +676,77 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
-### fusion_quality (v0.6, NEW)
+### fusion_quality
 **Implementation**: `evals/evals.py`
 
-**Biological question**: Does combining sequence + target improve predictions over either alone?
+**Biological question**: Does fusion produce richer action representations?
 
-**Setup**: For samples with both seq and target available, compare:
-- action_fused = encode_full(seq, target, mode)
-- action_seq_only = encode_sequence_only(seq, mode)
-- action_target_only = encode_target_only(target, mode)
+**Setup**: For samples with both seq and target available, compare action vectors from:
+- Fused path (both seq and target)
+- Sequence-only path
+- Target-only path
 
 **Metrics**:
 
 | Metric | Description |
 |--------|-------------|
-| Fused vs Seq-Only | Prediction quality improvement from fusion |
-| Fused vs Target-Only | Prediction quality improvement from fusion |
-| Information Gain | How much does fusion add beyond sum of parts? |
+| Fused Variance | Variance of fused action vectors |
+| Seq-Only Variance | Variance of sequence-only action vectors |
+| Target-Only Variance | Variance of target-only action vectors |
+| Fused-Seq Similarity | Mean cosine similarity between fused and seq-only |
+| Fused-Target Similarity | Mean cosine similarity between fused and target-only |
 
 **How to interpret**:
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Fused Improvement | > 10% | 0 - 10% | < 0% | Fusion should improve or at least not hurt |
+| Fused Variance Ratio | > 1.1 | 0.9 - 1.1 | < 0.9 | Fused should be at least as rich as inputs |
 
 **Interpretation guide**:
-- Validates that the fusion layer adds value
-- If fusion doesn't improve, the MLP may be underfitting or overfitting
-- Negative improvement suggests fusion is losing information
+- Tests if fusion produces richer action representations than either path alone
+- Fused variance lower than inputs suggests fusion is collapsing information
+- High similarity to both paths indicates fusion combines information from both
 
 **Data requirements**: Samples with both seq and target available.
 
 ---
 
-### missing_data_robustness (v0.6, NEW)
+### missing_data_robustness
 **Implementation**: `evals/evals.py`
 
 **Biological question**: How gracefully does the model degrade with missing information?
 
-**Setup**: For samples with both seq and target, compare:
-- Performance with full info (both seq and target)
-- Performance with seq only (mask target)
-- Performance with target only (mask seq)
+**Setup**: For samples with both seq and target, compare retrieval MRR with:
+- Full info (both seq and target)
+- Sequence only (target masked)
+- Target only (sequence masked)
 
 **Metrics**:
 
 | Metric | Description |
 |--------|-------------|
-| Full Performance | Baseline with all available data |
-| Seq-Only Drop | Performance degradation when target missing |
-| Target-Only Drop | Performance degradation when sequence missing |
-| Recovery Ratio | How much does having one input help vs having none? |
+| Full MRR | Retrieval performance with all available data |
+| Seq-Only MRR | Retrieval performance with sequence only |
+| Target-Only MRR | Retrieval performance with target only |
+| Seq-Only Retention | Seq-only MRR / Full MRR |
+| Target-Only Retention | Target-only MRR / Full MRR |
 
 **How to interpret**:
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Recovery Ratio | > 0.7 | 0.5 - 0.7 | < 0.5 | Higher = better graceful degradation |
+| Retention | > 0.7 | 0.5 - 0.7 | < 0.5 | Higher = better graceful degradation |
 
 **Interpretation guide**:
 - Real data will have missing values; model should handle gracefully
-- If seq-only drop is much larger than target-only drop, model relies more on targets
-- Unknown embedding (neither available) should still produce reasonable actions
+- If seq-only retention is much higher than target-only, model relies more on sequences
+- Retention ratio shows how much information each path contributes
 
 **Data requirements**: Samples with both seq and target available.
 
 ---
 
-### multi_pert_alignment (v0.6, NEW)
+### multi_pert_alignment
 **Implementation**: `evals/evals.py`
 
 **Biological question**: For multi-perturbation samples, does alignment work correctly?
@@ -773,7 +776,7 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
-### target_family_probing (v0.6, UPDATED)
+### target_family_probing
 **Implementation**: `evals/evals.py`
 
 **Biological question**: Do action embeddings encode protein family information?
@@ -912,6 +915,6 @@ These evaluations require additional data or architectural changes and are not c
 | Batch labels (gem_group) | Added to shards | batch_invariance | Done |
 | KEGG/Reactome pathways | gseapy | gene_embedding_pathways, action_vector_pathways, moa_matching | Done |
 | DepMap K562 CRISPR | DepMap API | essential_gene_prediction | Done |
-| Cell type labels | Add to shards | cell_type_probing | Pending (v0.6) |
+| Cell type labels | Add to shards | cell_type_probing | Done |
 | Replogle RPE1 | GEARS/GEO | cross_cell_type_transfer | Pending |
 | SynLethDB | Public database | synthetic_lethality_signal | Pending |

@@ -609,26 +609,39 @@ def _cell_type_probing(ctx):
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
-    all_emb, all_cell_type = [], []
+    all_emb, all_cell_type, all_batch_id = [], [], []
     with torch.no_grad():
         for _ in tqdm(range(test_steps), desc='cell_type_probing: Extracting embeddings'):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            cell_type = batch.cell_type
             emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
             all_emb.append(emb)
-            all_cell_type.append(cell_type.cpu().numpy())
+            all_cell_type.append(batch.cell_type.cpu().numpy())
+            all_batch_id.append(batch.batch_id.cpu().numpy())
 
     embeddings = np.concatenate(all_emb, axis=0)
     cell_types = np.concatenate(all_cell_type, axis=0).flatten()
+    batch_ids = np.concatenate(all_batch_id, axis=0).flatten()
 
     unique_types = sorted(np.unique(cell_types))
-    type_map = {t: i for i, t in enumerate(unique_types)}
-    labels = np.array([type_map[t] for t in cell_types])
-    n_classes = len(type_map)
+    valid_cell_types = []
+    for ct in unique_types:
+        ct_mask = cell_types == ct
+        ct_batches = batch_ids[ct_mask]
+        if len(np.unique(ct_batches)) > 1:
+            valid_cell_types.append(ct)
 
-    if n_classes < 2:
-        return {'error': 'cell_type data not available or single cell type in data', 'config': {'num_cell_types': n_classes}}
+    if len(valid_cell_types) < 2:
+        return {'error': 'Not enough cell types with batch variation for meaningful probing',
+                'config': {'total_cell_types': len(unique_types), 'valid_cell_types': len(valid_cell_types)}}
+
+    valid_mask = np.isin(cell_types, valid_cell_types)
+    embeddings = embeddings[valid_mask]
+    cell_types_filtered = cell_types[valid_mask]
+
+    type_map = {t: i for i, t in enumerate(valid_cell_types)}
+    labels = np.array([type_map[t] for t in cell_types_filtered])
+    n_classes = len(type_map)
 
     train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=42, stratify=labels)
 
@@ -641,7 +654,7 @@ def _cell_type_probing(ctx):
     print(f'cell_type_probing: Accuracy={val_acc:.4f} ({val_acc/chance:.1f}x chance), Macro F1={macro_f1:.4f}')
 
     return {
-        'config': {'samples': len(embeddings), 'embedding_dim': int(embeddings.shape[1]), 'num_cell_types': n_classes},
+        'config': {'samples': len(embeddings), 'embedding_dim': int(embeddings.shape[1]), 'num_cell_types': n_classes, 'filtered_from': len(unique_types)},
         'metrics': {'accuracy': float(val_acc), 'macro_f1': float(macro_f1), 'chance': float(chance), 'above_chance_ratio': float(val_acc / chance)}
     }
 
@@ -1156,13 +1169,8 @@ def _uncertainty_calibration(ctx, n_bins=10):
 
 def _action_vector_pathways(ctx):
     '''Do perturbations targeting same pathway produce similar action vectors?'''
-    id_to_gene = ctx.id_to_gene
     pathway_libs = ctx.pathway_annotations
     inf = ctx.alignment_inference
-    if 'dna_actions' not in inf:
-        return {'error': 'No DNA action vectors available'}
-
-    action_vectors = inf['dna_actions'].cpu().numpy()
 
     gene_to_pathway = {}
     for pathway, genes in pathway_libs['KEGG_2021_Human'].items():
@@ -1171,14 +1179,46 @@ def _action_vector_pathways(ctx):
                 if gene.upper() not in gene_to_pathway:
                     gene_to_pathway[gene.upper()] = pathway
 
-    pert_labels = {pid: gene_to_pathway[gene] for pid, gene in id_to_gene.items() if gene in gene_to_pathway and pid < action_vectors.shape[0]}
-    action_idx = list(pert_labels.keys())
-    if len(action_idx) < 10:
-        return {'error': f'Not enough perturbations with pathway annotations (found {len(action_idx)})'}
-    metrics = compute_pathway_clustering_metrics(action_vectors[action_idx], [pert_labels[i] for i in action_idx], min_samples_per_class=5)
+    results = {}
 
-    print(f'action_vector_pathways: KEGG sil={metrics["silhouette_score"]:.4f}, kNN={metrics["knn_accuracy"]:.4f}')
-    return {'config': {'n_perturbations': len(id_to_gene)}, 'kegg': metrics}
+    if 'dna_actions' in inf:
+        dna_actions = inf['dna_actions'].cpu().numpy()
+        id_to_gene = ctx.id_to_gene
+        pert_labels = {pid: gene_to_pathway[gene] for pid, gene in id_to_gene.items() if gene in gene_to_pathway and pid < dna_actions.shape[0]}
+        if len(pert_labels) >= 10:
+            action_idx = list(pert_labels.keys())
+            metrics = compute_pathway_clustering_metrics(dna_actions[action_idx], [pert_labels[i] for i in action_idx], min_samples_per_class=5)
+            results['dna'] = metrics
+            print(f'action_vector_pathways DNA: sil={metrics.get("silhouette_score", "N/A")}')
+
+    if 'chem_actions' in inf:
+        chem_actions = inf['chem_actions'].cpu().numpy()
+        pairs = ctx.alignment_pairs
+        chem_mask = pairs['modality'] == 2
+        if chem_mask.sum() > 0:
+            chem_seq_idx = pairs['seq_idx'][chem_mask]
+            chem_target_idx = pairs['target_idx'][chem_mask]
+            gene_to_target_path = ctx.paths['pert_dir'] / 'target_banks' / 'gene_to_target_idx.json'
+            if gene_to_target_path.exists():
+                with open(gene_to_target_path) as f:
+                    gene_to_target = json.load(f)
+                target_to_gene = {tidx: gene.upper() for gene, tidx in gene_to_target.items() if not gene.startswith('ENSG')}
+                chem_pert_labels = {}
+                for s, t in zip(chem_seq_idx, chem_target_idx):
+                    if s < chem_actions.shape[0] and t in target_to_gene:
+                        gene = target_to_gene[t]
+                        if gene in gene_to_pathway:
+                            chem_pert_labels[int(s)] = gene_to_pathway[gene]
+                if len(chem_pert_labels) >= 10:
+                    action_idx = list(chem_pert_labels.keys())
+                    metrics = compute_pathway_clustering_metrics(chem_actions[action_idx], [chem_pert_labels[i] for i in action_idx], min_samples_per_class=5)
+                    results['chemical'] = metrics
+                    print(f'action_vector_pathways chemical: sil={metrics.get("silhouette_score", "N/A")}')
+
+    if not results:
+        return {'error': 'No action vectors available for pathway analysis'}
+
+    return {'config': {'n_pathways_kegg': len(gene_to_pathway)}, 'by_modality': results}
 
 
 def _moa_matching(ctx):
@@ -1669,80 +1709,108 @@ def _missing_data_robustness(ctx):
 
 
 def _multi_pert_alignment(ctx):
-    '''Multi-perturbation samples alignment quality using attention pooling.'''
-    inf = ctx.alignment_inference
-    if 'dna_actions' not in inf or 'target_actions' not in inf:
-        return {'error': 'Need sequence and target actions for multi-pert test'}
-
-    dna_bank = ctx.seq_banks.get('dna') if ctx.seq_banks else None
-    target_bank = ctx.target_bank
-    if dna_bank is None or target_bank is None:
+    '''Multi-perturbation alignment using real Norman dual-gene samples.'''
+    if ctx.seq_banks is None or 'dna' not in ctx.seq_banks or ctx.target_bank is None:
         return {'error': 'Feature banks not available'}
 
-    pairs = ctx.alignment_pairs
-    dna_mask = pairs['modality'] == 0
-    seq_idx = pairs['seq_idx'][dna_mask]
-    target_idx = pairs['target_idx'][dna_mask]
+    dna_bank = ctx.seq_banks['dna']
+    target_bank = ctx.target_bank
 
-    n_test = min(100, len(seq_idx) // 2)
-    if n_test < 10:
-        return {'error': 'Not enough pairs for multi-pert test'}
+    try:
+        test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    except RuntimeError as e:
+        return {'error': f'Could not load test shards: {e}. Run data_prep_03_shards.ipynb first.'}
+
+    test_steps = min(500, ctx.config['test_total_examples'] // ctx.config['batch_size'])
+    single_pert_samples, multi_pert_samples = [], []
+
+    for _ in tqdm(range(test_steps), desc='multi_pert_alignment: Scanning for multi-pert'):
+        batch = test_loader.next_batch()
+        for i in range(batch.n_perts.shape[0]):
+            n = int(batch.n_perts[i].item())
+            if batch.modality[i, 0].item() != 0:
+                continue
+            if n == 1:
+                s, t, m = int(batch.seq_idx[i, 0]), int(batch.target_idx[i, 0]), int(batch.mode[i, 0])
+                if s >= 0 and s < dna_bank.shape[0] and t >= 0 and t < target_bank.shape[0]:
+                    single_pert_samples.append((s, t, m))
+            elif n > 1:
+                perts = []
+                valid = True
+                for j in range(n):
+                    s, t, m = int(batch.seq_idx[i, j]), int(batch.target_idx[i, j]), int(batch.mode[i, j])
+                    if s < 0 or s >= dna_bank.shape[0] or t < 0 or t >= target_bank.shape[0]:
+                        valid = False
+                        break
+                    perts.append((s, t, m))
+                if valid:
+                    multi_pert_samples.append(perts)
+
+    if len(multi_pert_samples) < 10:
+        return {'error': f'Not enough multi-pert samples (found {len(multi_pert_samples)}). Norman dual-gene may not be in test split.'}
+
+    if len(single_pert_samples) < 10:
+        return {'error': f'Not enough single-pert samples for comparison (found {len(single_pert_samples)})'}
 
     rng = np.random.RandomState(42)
-    single_pert_sims, double_pert_sims = [], []
+    single_sample = rng.choice(len(single_pert_samples), min(200, len(single_pert_samples)), replace=False)
+    single_sims = []
 
     with torch.no_grad():
-        for _ in range(n_test):
-            idx1, idx2 = rng.choice(len(seq_idx), 2, replace=False)
-            s1, t1 = seq_idx[idx1], target_idx[idx1]
-            s2, t2 = seq_idx[idx2], target_idx[idx2]
-            if s1 >= dna_bank.shape[0] or s2 >= dna_bank.shape[0] or t1 >= target_bank.shape[0] or t2 >= target_bank.shape[0]:
-                continue
+        for idx in single_sample:
+            s, t, m = single_pert_samples[idx]
+            seq_emb = torch.zeros(1, 1, MAX_SEQ_DIM, device=ctx.device)
+            emb = dna_bank[s]
+            if emb.shape[-1] < MAX_SEQ_DIM:
+                emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
+            seq_emb[0, 0] = emb
+            target_emb = target_bank[t].unsqueeze(0).unsqueeze(0)
+            mod = torch.zeros(1, 1, dtype=torch.long, device=ctx.device)
+            mode = torch.full((1, 1), m, dtype=torch.long, device=ctx.device)
+            mask = torch.ones(1, 1, dtype=torch.bool, device=ctx.device)
+            seq_action = ctx.biojepa.composer.encode_sequence_path(seq_emb, mod, mode, mask)
+            target_action = ctx.biojepa.composer.encode_target_path(target_emb, mode, mask)
+            seq_pooled = ctx.biojepa.composer.attention_pool(seq_action, mask)
+            target_pooled = ctx.biojepa.composer.attention_pool(target_action, mask)
+            sim = F.cosine_similarity(seq_pooled, target_pooled, dim=1).item()
+            single_sims.append(sim)
 
-            seq_emb_single = torch.zeros(1, 1, MAX_SEQ_DIM, device=ctx.device)
-            seq_emb_single[0, 0, :dna_bank.shape[-1]] = dna_bank[s1]
-            target_emb_single = target_bank[t1].unsqueeze(0).unsqueeze(0)
-            mod_single = torch.zeros(1, 1, dtype=torch.long, device=ctx.device)
-            mode_single = torch.zeros(1, 1, dtype=torch.long, device=ctx.device)
-            mask_single = torch.ones(1, 1, dtype=torch.bool, device=ctx.device)
+    multi_sample = rng.choice(len(multi_pert_samples), min(100, len(multi_pert_samples)), replace=False)
+    multi_sims = []
 
-            seq_action_single = ctx.biojepa.composer.encode_sequence_path(seq_emb_single, mod_single, mode_single, mask_single)
-            target_action_single = ctx.biojepa.composer.encode_target_path(target_emb_single, mode_single, mask_single)
-            seq_pooled_single = ctx.biojepa.composer.attention_pool(seq_action_single, mask_single)
-            target_pooled_single = ctx.biojepa.composer.attention_pool(target_action_single, mask_single)
-            sim_single = torch.nn.functional.cosine_similarity(seq_pooled_single, target_pooled_single, dim=1).item()
-            single_pert_sims.append(sim_single)
+    with torch.no_grad():
+        for idx in multi_sample:
+            perts = multi_pert_samples[idx]
+            n = len(perts)
+            seq_emb = torch.zeros(1, n, MAX_SEQ_DIM, device=ctx.device)
+            target_emb = torch.zeros(1, n, target_bank.shape[-1], device=ctx.device)
+            mode_ids = torch.zeros(1, n, dtype=torch.long, device=ctx.device)
+            for j, (s, t, m) in enumerate(perts):
+                emb = dna_bank[s]
+                if emb.shape[-1] < MAX_SEQ_DIM:
+                    emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
+                seq_emb[0, j] = emb
+                target_emb[0, j] = target_bank[t]
+                mode_ids[0, j] = m
+            mod = torch.zeros(1, n, dtype=torch.long, device=ctx.device)
+            mask = torch.ones(1, n, dtype=torch.bool, device=ctx.device)
+            seq_action = ctx.biojepa.composer.encode_sequence_path(seq_emb, mod, mode_ids, mask)
+            target_action = ctx.biojepa.composer.encode_target_path(target_emb, mode_ids, mask)
+            seq_pooled = ctx.biojepa.composer.attention_pool(seq_action, mask)
+            target_pooled = ctx.biojepa.composer.attention_pool(target_action, mask)
+            sim = F.cosine_similarity(seq_pooled, target_pooled, dim=1).item()
+            multi_sims.append(sim)
 
-            seq_emb_double = torch.zeros(1, 2, MAX_SEQ_DIM, device=ctx.device)
-            seq_emb_double[0, 0, :dna_bank.shape[-1]] = dna_bank[s1]
-            seq_emb_double[0, 1, :dna_bank.shape[-1]] = dna_bank[s2]
-            target_emb_double = torch.zeros(1, 2, target_bank.shape[-1], device=ctx.device)
-            target_emb_double[0, 0] = target_bank[t1]
-            target_emb_double[0, 1] = target_bank[t2]
-            mod_double = torch.zeros(1, 2, dtype=torch.long, device=ctx.device)
-            mode_double = torch.zeros(1, 2, dtype=torch.long, device=ctx.device)
-            mask_double = torch.ones(1, 2, dtype=torch.bool, device=ctx.device)
+    single_mean = float(np.mean(single_sims))
+    multi_mean = float(np.mean(multi_sims))
+    degradation = 1.0 - (multi_mean / single_mean) if single_mean > 0 else 0.0
 
-            seq_action_double = ctx.biojepa.composer.encode_sequence_path(seq_emb_double, mod_double, mode_double, mask_double)
-            target_action_double = ctx.biojepa.composer.encode_target_path(target_emb_double, mode_double, mask_double)
-            seq_pooled_double = ctx.biojepa.composer.attention_pool(seq_action_double, mask_double)
-            target_pooled_double = ctx.biojepa.composer.attention_pool(target_action_double, mask_double)
-            sim_double = torch.nn.functional.cosine_similarity(seq_pooled_double, target_pooled_double, dim=1).item()
-            double_pert_sims.append(sim_double)
-
-    if not single_pert_sims:
-        return {'error': 'No valid pairs for multi-pert test'}
-
-    single_mean = float(np.mean(single_pert_sims))
-    double_mean = float(np.mean(double_pert_sims))
-    degradation = 1.0 - (double_mean / single_mean) if single_mean > 0 else 0.0
-
-    print(f'multi_pert_alignment: Single={single_mean:.4f}, Double={double_mean:.4f}, Degradation={degradation:.2%}')
+    print(f'multi_pert_alignment: Single={single_mean:.4f}, Multi={multi_mean:.4f}, Degradation={degradation:.2%}')
 
     return {
-        'config': {'n_test_samples': len(single_pert_sims)},
-        'single_pert': {'mean_sim': single_mean, 'std': float(np.std(single_pert_sims))},
-        'double_pert': {'mean_sim': double_mean, 'std': float(np.std(double_pert_sims))},
+        'config': {'n_single_samples': len(single_sims), 'n_multi_samples': len(multi_sims), 'n_multi_pert_total': len(multi_pert_samples)},
+        'single_pert': {'mean_sim': single_mean, 'std': float(np.std(single_sims))},
+        'multi_pert': {'mean_sim': multi_mean, 'std': float(np.std(multi_sims))},
         'degradation': float(degradation)
     }
 
@@ -1815,6 +1883,40 @@ def _target_family_probing(ctx):
                 'accuracy': float(val_acc),
                 'macro_f1': float(f1_score(y[val_idx], val_preds, average='macro')),
                 'n_samples': len(valid_perts_with_target)
+            }
+
+    if ctx.seq_banks and 'dna' in ctx.seq_banks and ctx.target_bank is not None:
+        dna_bank = ctx.seq_banks['dna']
+        target_bank_tensor = ctx.target_bank
+        pairs = ctx.alignment_pairs
+        dna_mask = pairs['modality'] == 0
+        seq_to_target = {int(s): int(t) for s, t in zip(pairs['seq_idx'][dna_mask], pairs['target_idx'][dna_mask])}
+        valid_fused = [p for p in valid_perts if p < dna_bank.shape[0] and p in seq_to_target and seq_to_target[p] < target_bank_tensor.shape[0]]
+        if len(valid_fused) >= 20:
+            n_test = len(valid_fused)
+            with torch.no_grad():
+                seq_emb = torch.zeros(n_test, 1, MAX_SEQ_DIM, device=ctx.device)
+                target_emb = torch.zeros(n_test, 1, target_bank_tensor.shape[-1], device=ctx.device)
+                for i, p in enumerate(valid_fused):
+                    emb = dna_bank[p]
+                    if emb.shape[-1] < MAX_SEQ_DIM:
+                        emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
+                    seq_emb[i, 0] = emb
+                    target_emb[i, 0] = target_bank_tensor[seq_to_target[p]]
+                modality_ids = torch.zeros(n_test, 1, dtype=torch.long, device=ctx.device)
+                mode_ids = torch.zeros(n_test, 1, dtype=torch.long, device=ctx.device)
+                has_seq = torch.ones(n_test, 1, dtype=torch.bool, device=ctx.device)
+                has_target = torch.ones(n_test, 1, dtype=torch.bool, device=ctx.device)
+                pert_mask = torch.ones(n_test, 1, dtype=torch.bool, device=ctx.device)
+                fused_actions = ctx.biojepa.composer(seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask).squeeze(1)
+            X = fused_actions.cpu().numpy()
+            y = np.array([family_to_idx[pert_families[pid]] for pid in valid_fused])
+            train_idx, val_idx = train_test_split(np.arange(len(X)), test_size=0.3, random_state=42, stratify=y)
+            _, val_preds, val_acc = train_linear_classifier(X[train_idx], y[train_idx], X[val_idx], y[val_idx], n_families, ctx.device, epochs=200)
+            results['fused'] = {
+                'accuracy': float(val_acc),
+                'macro_f1': float(f1_score(y[val_idx], val_preds, average='macro')),
+                'n_samples': len(valid_fused)
             }
 
     chance = 1.0 / n_families
