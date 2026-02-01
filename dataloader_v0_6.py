@@ -115,7 +115,7 @@ class PretrainLoader(_BaseShardLoader):
         super().__init__(batch_size, split, data_dir, device, total_samples)
 
     def load_file(self, filename):
-        print(f'loading {filename}')
+        #print(f'loading {filename}')
         with np.load(filename) as data:
             x = data['x'].astype(np.float32)
             total = data['total'].astype(np.float32)
@@ -131,7 +131,7 @@ class AlignmentLoader(_BaseShardLoader):
         super().__init__(batch_size, split, data_dir, device, total_samples)
 
     def load_file(self, filename):
-        print(f'loading {filename}')
+        #print(f'loading {filename}')
         with np.load(filename) as data:
             seq_idx = data['seq_idx'].astype(np.int64)
             target_idx = data['target_idx'].astype(np.int64)
@@ -149,7 +149,7 @@ class TrainingLoader(_BaseShardLoader):
         super().__init__(batch_size, split, data_dir, device, total_samples)
 
     def load_file(self, filename):
-        print(f'loading {filename}')
+        #print(f'loading {filename}')
         with np.load(filename) as data:
             control_x = data['control'].astype(np.float32)
             control_tot = data['control_total'].astype(np.float32)

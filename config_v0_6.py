@@ -34,6 +34,7 @@ class FullTrainingConfig:
 class DecoderConfig:
     epochs: int = None #10
     lr: float = 1e-3
+    batch_size: int = 32
     n_steps: int = None
 
 
@@ -41,8 +42,8 @@ class DecoderConfig:
 class DataConfig:
     data_root: Path
     checkpoint_dir: Path
+    ref_dir: Path
     eval_results_dir: Path = None
-
 
 MODALITY_TO_ID = {
     'dna': 0,
@@ -61,3 +62,10 @@ MODE_TO_ID = {
     'binder': 7,
     'unknown': 8
 }
+
+EMBEDDING_DIMS = {
+    'dna': 1536,
+    'protein': 320,
+    'chemical': 1024,
+}
+MAX_SEQ_DIM = max(EMBEDDING_DIMS.values())

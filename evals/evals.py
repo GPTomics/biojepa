@@ -33,9 +33,11 @@ from dataloader_v0_6 import TrainingLoader
 from .linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from .pathway_utils import load_pathway_annotations, map_genes_to_pathways, compute_pathway_clustering_metrics
 from .linear_classifier import train_linear_classifier
+import torch.nn.functional as F
+from config_v0_6 import MAX_SEQ_DIM
 
 
-def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=1536):
+def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=MAX_SEQ_DIM):
     B, N = seq_idx.shape
     device = seq_idx.device
     seq_emb = torch.zeros(B, N, max_seq_dim, device=device)
@@ -45,9 +47,18 @@ def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=1536):
         bank = seq_banks[mod_key]
         mod_mask = (modality == mod_id) & (seq_idx >= 0)
         if mod_mask.any():
-            valid_indices = seq_idx[mod_mask].clamp(0, bank.shape[0] - 1)
-            emb = bank[valid_indices]
-            seq_emb[mod_mask, :emb.shape[-1]] = emb
+            raw_indices = seq_idx[mod_mask]
+            in_bounds = raw_indices < bank.shape[0]
+            if not in_bounds.all():
+                n_oob = (~in_bounds).sum().item()
+                print(f'Warning: {n_oob} {mod_key} seq indices out of bounds (max valid={bank.shape[0]-1}), using zeros')
+            valid_mask_subset = mod_mask.clone()
+            valid_mask_subset[mod_mask] = in_bounds
+            if valid_mask_subset.any():
+                emb = bank[raw_indices[in_bounds]]
+                if emb.shape[-1] < max_seq_dim:
+                    emb = F.pad(emb, (0, max_seq_dim - emb.shape[-1]))
+                seq_emb[valid_mask_subset] = emb
     return seq_emb
 
 
@@ -58,8 +69,15 @@ def get_target_embeddings(target_idx, target_bank):
     target_emb = torch.zeros(B, N, D, device=device)
     valid_mask = target_idx >= 0
     if valid_mask.any():
-        valid_indices = target_idx[valid_mask].clamp(0, target_bank.shape[0] - 1)
-        target_emb[valid_mask] = target_bank[valid_indices]
+        raw_indices = target_idx[valid_mask]
+        in_bounds = raw_indices < target_bank.shape[0]
+        if not in_bounds.all():
+            n_oob = (~in_bounds).sum().item()
+            print(f'Warning: {n_oob} target indices out of bounds (max valid={target_bank.shape[0]-1}), using zeros')
+        final_mask = valid_mask.clone()
+        final_mask[valid_mask] = in_bounds
+        if final_mask.any():
+            target_emb[final_mask] = target_bank[raw_indices[in_bounds]]
     return target_emb
 
 
@@ -80,11 +98,9 @@ class EvalContext:
 
         self._biojepa = None
         self._decoder = None
-        self._input_bank = None
         self._gene_embeddings = None
         self._gene_names = None
         self._test_inference = None
-        self._anchor_bank = None
         self._alignment_pairs = None
         self._alignment_inference = None
         self._hgnc_gene_families = None
@@ -147,13 +163,6 @@ class EvalContext:
         return self._decoder
 
     @property
-    def input_bank(self):
-        if self._input_bank is None:
-            self._input_bank = torch.from_numpy(np.load(self.paths['pert_dir'] / 'input_embeddings_dna.npy')).float().to(self.device)
-            print(f'Loaded input bank: {self._input_bank.shape}')
-        return self._input_bank
-
-    @property
     def gene_embeddings(self):
         if self._gene_embeddings is None:
             self._gene_embeddings = self.biojepa.student.gene_embeddings.detach().cpu().numpy()
@@ -165,13 +174,6 @@ class EvalContext:
             with open(self.paths['data_dir'] / 'gene_names.json') as f:
                 self._gene_names = json.load(f)
         return self._gene_names
-
-    @property
-    def anchor_bank(self):
-        if self._anchor_bank is None:
-            self._anchor_bank = torch.from_numpy(np.load(self.paths['pert_dir'] / 'action_embeddings_esm2.npy')).float().to(self.device)
-            print(f'Loaded anchor bank: {self._anchor_bank.shape}')
-        return self._anchor_bank
 
     @property
     def seq_banks(self):
@@ -198,24 +200,6 @@ class EvalContext:
                 self._target_bank = torch.from_numpy(np.load(target_path)).float().to(self.device)
                 print(f'Loaded target bank: {self._target_bank.shape}')
         return self._target_bank
-
-    def get_dna_bank(self):
-        '''Get DNA embeddings, preferring v0.6 format, falling back to legacy.'''
-        if self.seq_banks and 'dna' in self.seq_banks:
-            return self.seq_banks['dna']
-        legacy_path = self.paths['pert_dir'] / 'input_embeddings_dna.npy'
-        if legacy_path.exists():
-            return self.input_bank
-        return None
-
-    def get_target_bank(self):
-        '''Get target embeddings, preferring v0.6 format, falling back to legacy.'''
-        if self.target_bank is not None:
-            return self.target_bank
-        legacy_path = self.paths['pert_dir'] / 'action_embeddings_esm2.npy'
-        if legacy_path.exists():
-            return self.anchor_bank
-        return None
 
     @property
     def alignment_pairs(self):
@@ -254,15 +238,15 @@ class EvalContext:
         Supports DNA and chemical modalities for sequences, protein targets only.
         '''
         if self._alignment_inference is None:
-            import torch.nn.functional as F
             result = {}
 
             with torch.no_grad():
                 if self.seq_banks and 'dna' in self.seq_banks:
                     dna_emb = self.seq_banks['dna']
                     n_dna = dna_emb.shape[0]
-                    seq_emb = torch.zeros(n_dna, 1, 1536, device=self.device)
-                    seq_emb[:, 0, :dna_emb.shape[-1]] = dna_emb
+                    seq_emb = torch.zeros(n_dna, 1, MAX_SEQ_DIM, device=self.device)
+                    padded_dna = F.pad(dna_emb, (0, MAX_SEQ_DIM - dna_emb.shape[-1])) if dna_emb.shape[-1] < MAX_SEQ_DIM else dna_emb
+                    seq_emb[:, 0, :] = padded_dna
                     modality_ids = torch.zeros(n_dna, 1, dtype=torch.long, device=self.device)
                     mode_ids = torch.zeros(n_dna, 1, dtype=torch.long, device=self.device)
                     pert_mask = torch.ones(n_dna, 1, dtype=torch.bool, device=self.device)
@@ -275,8 +259,9 @@ class EvalContext:
                 if self.seq_banks and 'chemical' in self.seq_banks:
                     chem_emb = self.seq_banks['chemical']
                     n_chem = chem_emb.shape[0]
-                    seq_emb = torch.zeros(n_chem, 1, 1536, device=self.device)
-                    seq_emb[:, 0, :chem_emb.shape[-1]] = chem_emb
+                    seq_emb = torch.zeros(n_chem, 1, MAX_SEQ_DIM, device=self.device)
+                    padded_chem = F.pad(chem_emb, (0, MAX_SEQ_DIM - chem_emb.shape[-1])) if chem_emb.shape[-1] < MAX_SEQ_DIM else chem_emb
+                    seq_emb[:, 0, :] = padded_chem
                     modality_ids = torch.full((n_chem, 1), 2, dtype=torch.long, device=self.device)
                     mode_ids = torch.full((n_chem, 1), 4, dtype=torch.long, device=self.device)
                     pert_mask = torch.ones(n_chem, 1, dtype=torch.bool, device=self.device)
@@ -297,36 +282,6 @@ class EvalContext:
                     result['target_actions'] = target_actions
                     result['target_actions_norm'] = F.normalize(target_actions, dim=1)
                     print(f'Encoded protein targets: {target_actions.shape}')
-
-                if 'dna_actions' not in result:
-                    legacy_dna_path = self.paths['pert_dir'] / 'input_embeddings_dna.npy'
-                    if legacy_dna_path.exists():
-                        dna_emb = self.input_bank
-                        n_dna = dna_emb.shape[0]
-                        seq_emb = torch.zeros(n_dna, 1, 1536, device=self.device)
-                        seq_emb[:, 0, :dna_emb.shape[-1]] = dna_emb
-                        modality_ids = torch.zeros(n_dna, 1, dtype=torch.long, device=self.device)
-                        mode_ids = torch.zeros(n_dna, 1, dtype=torch.long, device=self.device)
-                        pert_mask = torch.ones(n_dna, 1, dtype=torch.bool, device=self.device)
-                        dna_actions = self.biojepa.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
-                        dna_actions = dna_actions.squeeze(1)
-                        result['dna_actions'] = dna_actions
-                        result['dna_actions_norm'] = F.normalize(dna_actions, dim=1)
-                        print(f'Encoded DNA sequences (legacy): {dna_actions.shape}')
-
-                if 'target_actions' not in result:
-                    legacy_target_path = self.paths['pert_dir'] / 'action_embeddings_esm2.npy'
-                    if legacy_target_path.exists():
-                        target_emb = self.anchor_bank
-                        n_targets = target_emb.shape[0]
-                        target_emb_batched = target_emb.unsqueeze(1)
-                        mode_ids = torch.zeros(n_targets, 1, dtype=torch.long, device=self.device)
-                        pert_mask = torch.ones(n_targets, 1, dtype=torch.bool, device=self.device)
-                        target_actions = self.biojepa.composer.encode_target_path(target_emb_batched, mode_ids, pert_mask)
-                        target_actions = target_actions.squeeze(1)
-                        result['target_actions'] = target_actions
-                        result['target_actions_norm'] = F.normalize(target_actions, dim=1)
-                        print(f'Encoded protein targets (legacy): {target_actions.shape}')
 
             self._alignment_inference = result
         return self._alignment_inference
@@ -382,7 +337,8 @@ class EvalContext:
         bulk_pred_deltas, bulk_real_deltas = defaultdict(list), defaultdict(list)
         bulk_pred_abs, bulk_real_abs = defaultdict(list), defaultdict(list)
         bulk_control_states = defaultdict(list)
-        sample_pred_deltas, sample_real_deltas, sample_logvars, sample_pert_ids = [], [], [], []
+        sample_pred_deltas, sample_real_deltas, sample_logvars = [], [], []
+        sample_pert_ids, sample_target_ids, sample_pert_mods = [], [], []
         sample_mses, sample_correlations = [], []
 
         for _ in tqdm(range(test_steps), desc='Running test inference'):
@@ -412,20 +368,24 @@ class EvalContext:
             pred_abs_np, real_abs_np = pred_abs.cpu().numpy(), case_x.cpu().numpy()
             logvar_np = z_pred_logvar.mean(dim=-1).cpu().numpy()
             p_idx_np = batch.seq_idx[:, 0].cpu().numpy()
+            p_target_np = batch.target_idx[:, 0].cpu().numpy()
+            p_mod_np = batch.modality[:, 0].cpu().numpy()
             cont_x_np = cont_x.cpu().numpy()
 
             sample_pred_deltas.append(pred_delta_np)
             sample_real_deltas.append(real_delta_np)
             sample_logvars.append(logvar_np)
             sample_pert_ids.append(p_idx_np)
+            sample_target_ids.append(p_target_np)
+            sample_pert_mods.append(p_mod_np)
 
             for i in range(B):
-                pid = p_idx_np[i]
-                bulk_pred_deltas[pid].append(pred_delta_np[i])
-                bulk_real_deltas[pid].append(real_delta_np[i])
-                bulk_pred_abs[pid].append(pred_abs_np[i])
-                bulk_real_abs[pid].append(real_abs_np[i])
-                bulk_control_states[pid].append(cont_x_np[i])
+                key = (int(p_idx_np[i]), int(p_target_np[i]), int(p_mod_np[i]))
+                bulk_pred_deltas[key].append(pred_delta_np[i])
+                bulk_real_deltas[key].append(real_delta_np[i])
+                bulk_pred_abs[key].append(pred_abs_np[i])
+                bulk_real_abs[key].append(real_abs_np[i])
+                bulk_control_states[key].append(cont_x_np[i])
 
                 sample_mses.append(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
                 top_20_idx = np.argsort(np.abs(real_delta_np[i]))[-20:]
@@ -436,22 +396,24 @@ class EvalContext:
                 else:
                     sample_correlations.append(0.0)
 
-        pert_ids = list(bulk_pred_deltas.keys())
-        print(f'Aggregated {len(pert_ids)} perturbations, {len(sample_mses)} samples')
+        pert_keys = list(bulk_pred_deltas.keys())
+        print(f'Aggregated {len(pert_keys)} perturbations, {len(sample_mses)} samples')
 
         return {
-            'pert_ids': pert_ids,
-            'mean_pred_deltas': {pid: np.mean(np.stack(bulk_pred_deltas[pid]), axis=0) for pid in pert_ids},
-            'mean_real_deltas': {pid: np.mean(np.stack(bulk_real_deltas[pid]), axis=0) for pid in pert_ids},
-            'mean_pred_abs': {pid: np.mean(np.stack(bulk_pred_abs[pid]), axis=0) for pid in pert_ids},
-            'mean_real_abs': {pid: np.mean(np.stack(bulk_real_abs[pid]), axis=0) for pid in pert_ids},
-            'mean_control_states': {pid: np.mean(np.stack(bulk_control_states[pid]), axis=0) for pid in pert_ids},
+            'pert_keys': pert_keys,
+            'mean_pred_deltas': {k: np.mean(np.stack(bulk_pred_deltas[k]), axis=0) for k in pert_keys},
+            'mean_real_deltas': {k: np.mean(np.stack(bulk_real_deltas[k]), axis=0) for k in pert_keys},
+            'mean_pred_abs': {k: np.mean(np.stack(bulk_pred_abs[k]), axis=0) for k in pert_keys},
+            'mean_real_abs': {k: np.mean(np.stack(bulk_real_abs[k]), axis=0) for k in pert_keys},
+            'mean_control_states': {k: np.mean(np.stack(bulk_control_states[k]), axis=0) for k in pert_keys},
             'sample_mses': np.array(sample_mses),
             'sample_correlations': np.array(sample_correlations),
             'sample_pred_deltas': np.concatenate(sample_pred_deltas, axis=0),
             'sample_real_deltas': np.concatenate(sample_real_deltas, axis=0),
             'sample_logvars': np.concatenate(sample_logvars, axis=0),
-            'sample_pert_ids': np.concatenate(sample_pert_ids, axis=0)
+            'sample_pert_ids': np.concatenate(sample_pert_ids, axis=0),
+            'sample_target_ids': np.concatenate(sample_target_ids, axis=0),
+            'sample_pert_mods': np.concatenate(sample_pert_mods, axis=0),
         }
 
 
@@ -583,7 +545,7 @@ def _gene_embedding_pathways(ctx):
 
 def _essential_gene_prediction(ctx):
     '''Do gene embeddings encode functional importance?'''
-    depmap_file = ctx.paths['data_dir'] / 'depmap' / 'CRISPRGeneEffect.csv'
+    depmap_file = ctx.paths['ref_dir'] / 'depmap' / 'CRISPRGeneEffect.csv'
     if not depmap_file.exists():
         return {'error': f'DepMap file not found: {depmap_file}'}
 
@@ -901,7 +863,7 @@ def _latent_space_health(ctx):
 def _expression_prediction(ctx):
     '''Can we predict gene expression after perturbation?'''
     inf = ctx.test_inference
-    pert_ids = inf['pert_ids']
+    pert_keys = inf['pert_keys']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
     mean_pred_abs, mean_real_abs = inf['mean_pred_abs'], inf['mean_real_abs']
     sample_mses, sample_correlations = inf['sample_mses'], inf['sample_correlations']
@@ -910,9 +872,9 @@ def _expression_prediction(ctx):
     TOP_K = 50
     per_pert_r2_all, per_pert_r2_top50, per_pert_mse = [], [], []
 
-    for pid in pert_ids:
-        pred_abs, real_abs = mean_pred_abs[pid], mean_real_abs[pid]
-        pred_delta, real_delta = mean_pred_deltas[pid], mean_real_deltas[pid]
+    for key in pert_keys:
+        pred_abs, real_abs = mean_pred_abs[key], mean_real_abs[key]
+        pred_delta, real_delta = mean_pred_deltas[key], mean_real_deltas[key]
 
         if np.std(real_abs) > 1e-9:
             per_pert_r2_all.append(r2_score(real_abs, pred_abs))
@@ -923,13 +885,13 @@ def _expression_prediction(ctx):
     per_pert_r2_all, per_pert_r2_top50 = np.array(per_pert_r2_all), np.array(per_pert_r2_top50)
     per_pert_mse = np.array(per_pert_mse)
 
-    pred_severity = np.array([np.linalg.norm(mean_pred_deltas[pid]) for pid in pert_ids])
-    real_severity = np.array([np.linalg.norm(mean_real_deltas[pid]) for pid in pert_ids])
+    pred_severity = np.array([np.linalg.norm(mean_pred_deltas[k]) for k in pert_keys])
+    real_severity = np.array([np.linalg.norm(mean_real_deltas[k]) for k in pert_keys])
     severity_pearson, _ = pearsonr(pred_severity, real_severity)
     severity_spearman, _ = spearmanr(pred_severity, real_severity)
 
-    all_pred = np.concatenate([mean_pred_deltas[pid] for pid in pert_ids])
-    all_real = np.concatenate([mean_real_deltas[pid] for pid in pert_ids])
+    all_pred = np.concatenate([mean_pred_deltas[k] for k in pert_keys])
+    all_real = np.concatenate([mean_real_deltas[k] for k in pert_keys])
     all_errors, all_magnitudes = all_pred - all_real, np.abs(all_real)
 
     magnitude_bins = [0, 0.25, 0.5, 1.0, 1.5, 2.0, np.inf]
@@ -943,7 +905,7 @@ def _expression_prediction(ctx):
     print(f'expression_prediction: MSE={np.mean(sample_mses):.4f}, R2_all={per_pert_r2_all.mean():.4f}')
 
     return {
-        'config': {'test_perturbations': len(pert_ids), 'genes': n_genes, 'test_samples': len(sample_mses)},
+        'config': {'test_perturbations': len(pert_keys), 'genes': n_genes, 'test_samples': len(sample_mses)},
         'sample_level': {'mse': float(np.mean(sample_mses)), 'pearson_r_top20': float(np.mean(sample_correlations))},
         'perturbation_level': {
             'r2_all_genes': {'mean': float(per_pert_r2_all.mean()), 'median': float(np.median(per_pert_r2_all))},
@@ -958,19 +920,18 @@ def _expression_prediction(ctx):
 def _gene_level_analysis(ctx, direction_threshold=0.25):
     '''Direction of effect + top DEG recovery analysis.'''
     inf = ctx.test_inference
-    pert_ids = inf['pert_ids']
+    pert_keys = inf['pert_keys']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
     n_genes = ctx.config['num_genes']
 
     def classify_direction(delta, threshold=direction_threshold):
-        '''Classify gene expression changes as UP (1), DOWN (-1), or UNCHANGED (0).'''
         direction = np.zeros_like(delta, dtype=np.int8)
         direction[delta >= threshold] = 1
         direction[delta <= -threshold] = -1
         return direction
 
-    all_pred_dir = np.concatenate([classify_direction(mean_pred_deltas[pid]) for pid in pert_ids])
-    all_real_dir = np.concatenate([classify_direction(mean_real_deltas[pid]) for pid in pert_ids])
+    all_pred_dir = np.concatenate([classify_direction(mean_pred_deltas[k]) for k in pert_keys])
+    all_real_dir = np.concatenate([classify_direction(mean_real_deltas[k]) for k in pert_keys])
     overall_accuracy = accuracy_score(all_real_dir, all_pred_dir)
     f1_up = f1_score(all_real_dir, all_pred_dir, labels=[1], average='macro', zero_division=0)
     f1_down = f1_score(all_real_dir, all_pred_dir, labels=[-1], average='macro', zero_division=0)
@@ -978,15 +939,15 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
 
     TOP_K_DIR = 50
     top_deg_pred, top_deg_real = [], []
-    for pid in pert_ids:
-        top_k_idx = np.argsort(np.abs(mean_real_deltas[pid]))[-TOP_K_DIR:]
-        top_deg_pred.append(classify_direction(mean_pred_deltas[pid][top_k_idx]))
-        top_deg_real.append(classify_direction(mean_real_deltas[pid][top_k_idx]))
+    for key in pert_keys:
+        top_k_idx = np.argsort(np.abs(mean_real_deltas[key]))[-TOP_K_DIR:]
+        top_deg_pred.append(classify_direction(mean_pred_deltas[key][top_k_idx]))
+        top_deg_real.append(classify_direction(mean_real_deltas[key][top_k_idx]))
     top_deg_accuracy = accuracy_score(np.concatenate(top_deg_real), np.concatenate(top_deg_pred))
 
     all_magnitudes, all_correct = [], []
-    for pid in pert_ids:
-        real_delta, pred_delta = mean_real_deltas[pid], mean_pred_deltas[pid]
+    for key in pert_keys:
+        real_delta, pred_delta = mean_real_deltas[key], mean_pred_deltas[key]
         all_magnitudes.extend(np.abs(real_delta))
         all_correct.extend(classify_direction(pred_delta) == classify_direction(real_delta))
     all_magnitudes, all_correct = np.array(all_magnitudes), np.array(all_correct)
@@ -1000,11 +961,9 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
             accuracy_by_magnitude[bin_labels[i]] = {'accuracy': float(all_correct[mask].mean()), 'count': int(mask.sum())}
 
     def precision_at_k(pred_rank, true_rank, k):
-        '''Fraction of predicted top-k that are in true top-k.'''
         return len(set(pred_rank[:k]) & set(true_rank[:k])) / k
 
     def ndcg_at_k(pred_rank, true_rank, k):
-        '''Normalized Discounted Cumulative Gain for ranking quality.'''
         true_set = set(true_rank[:k])
         rels = [1 if g in true_set else 0 for g in pred_rank[:k]]
         dcg = sum(r / np.log2(i + 2) for i, r in enumerate(rels))
@@ -1013,9 +972,9 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
 
     K_VALUES = [10, 20, 50, 100]
     deg_results = {k: {'precision': [], 'ndcg': [], 'overlap': []} for k in K_VALUES}
-    for pid in pert_ids:
-        pred_rank = np.argsort(np.abs(mean_pred_deltas[pid]))[::-1]
-        true_rank = np.argsort(np.abs(mean_real_deltas[pid]))[::-1]
+    for key in pert_keys:
+        pred_rank = np.argsort(np.abs(mean_pred_deltas[key]))[::-1]
+        true_rank = np.argsort(np.abs(mean_real_deltas[key]))[::-1]
         for k in K_VALUES:
             deg_results[k]['precision'].append(precision_at_k(pred_rank, true_rank, k))
             deg_results[k]['ndcg'].append(ndcg_at_k(pred_rank, true_rank, k))
@@ -1024,7 +983,7 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     print(f'gene_level_analysis: Dir_acc={overall_accuracy:.4f}, Top50_acc={top_deg_accuracy:.4f}')
 
     return {
-        'config': {'test_perturbations': len(pert_ids), 'genes': n_genes, 'direction_threshold': direction_threshold},
+        'config': {'test_perturbations': len(pert_keys), 'genes': n_genes, 'direction_threshold': direction_threshold},
         'direction_of_effect': {'all_genes_accuracy': float(overall_accuracy), 'top50_degs_accuracy': float(top_deg_accuracy), 'f1_up': float(f1_up), 'f1_down': float(f1_down), 'f1_unchanged': float(f1_unchanged), 'accuracy_by_magnitude': accuracy_by_magnitude},
         'top_deg_recovery': {str(k): {'precision': float(np.mean(deg_results[k]['precision'])), 'ndcg': float(np.mean(deg_results[k]['ndcg'])), 'overlap': float(np.mean(deg_results[k]['overlap'])), 'vs_random': float(np.mean(deg_results[k]['overlap']) / (k * k / n_genes))} for k in K_VALUES}
     }
@@ -1033,33 +992,54 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
 def _perturbation_retrieval(ctx, n_eval=100):
     '''Given desired outcome, can we find the right perturbation?'''
     inf = ctx.test_inference
-    pert_ids = inf['pert_ids']
+    pert_keys = inf['pert_keys']
     mean_real_deltas = inf['mean_real_deltas']
     mean_control_states = inf['mean_control_states']
-    n_genes, n_perturbations = ctx.config['num_genes'], ctx.input_bank.shape[0]
+    n_genes = ctx.config['num_genes']
 
-    pert_mod = torch.zeros(n_perturbations, dtype=torch.long, device=ctx.device)
-    pert_mode = torch.zeros(n_perturbations, dtype=torch.long, device=ctx.device)
+    retrieval_banks = {}
+    if ctx.seq_banks and 'dna' in ctx.seq_banks:
+        dna = ctx.seq_banks['dna']
+        if dna.shape[-1] < MAX_SEQ_DIM:
+            dna = F.pad(dna, (0, MAX_SEQ_DIM - dna.shape[-1]))
+        retrieval_banks['dna'] = {'bank': dna, 'mod_id': 0, 'mode': 0, 'use_seq': True}
+    if ctx.seq_banks and 'chemical' in ctx.seq_banks:
+        chem = ctx.seq_banks['chemical']
+        if chem.shape[-1] < MAX_SEQ_DIM:
+            chem = F.pad(chem, (0, MAX_SEQ_DIM - chem.shape[-1]))
+        retrieval_banks['chemical'] = {'bank': chem, 'mod_id': 2, 'mode': 4, 'use_seq': True}
+    if ctx.target_bank is not None:
+        retrieval_banks['target_only'] = {'bank': ctx.target_bank, 'mod_id': 0, 'mode': 0, 'use_seq': False}
 
-    def predict_all_deltas(control_x_np, batch_size=64):
-        '''Predict expression deltas for all perturbations given a control state.'''
+    if not retrieval_banks:
+        return {'error': 'No perturbation banks available'}
+
+    def predict_all_deltas(control_x_np, bank_info, batch_size=64):
+        bank, mod_id, mode_id, use_seq = bank_info['bank'], bank_info['mod_id'], bank_info['mode'], bank_info['use_seq']
+        n_perts = bank.shape[0]
         control_x = torch.from_numpy(control_x_np).float().to(ctx.device)
         control_tot = control_x.sum()
         all_pred = []
-        for start in range(0, n_perturbations, batch_size):
-            end = min(start + batch_size, n_perturbations)
+        for start in range(0, n_perts, batch_size):
+            end = min(start + batch_size, n_perts)
             B = end - start
-            control_batch = control_x.unsqueeze(0).expand(B, -1)
-            control_tot_batch = control_tot.unsqueeze(0).expand(B)
             batch_idx = torch.arange(start, end, device=ctx.device)
             with torch.no_grad():
+                control_batch = control_x.unsqueeze(0).expand(B, -1)
+                control_tot_batch = control_tot.unsqueeze(0).expand(B)
                 z_ctx = ctx.biojepa.student(control_batch, control_tot_batch, mask_idx=None)
-                seq_emb = ctx.input_bank[batch_idx].unsqueeze(1)
-                target_emb = torch.zeros(B, 1, 320, device=ctx.device)
-                modality_ids = pert_mod[batch_idx].unsqueeze(1)
-                mode_ids = pert_mode[batch_idx].unsqueeze(1)
-                has_seq = torch.ones(B, 1, dtype=torch.bool, device=ctx.device)
-                has_target = torch.zeros(B, 1, dtype=torch.bool, device=ctx.device)
+                if use_seq:
+                    seq_emb = bank[batch_idx].unsqueeze(1)
+                    target_emb = torch.zeros(B, 1, 320, device=ctx.device)
+                    has_seq = torch.ones(B, 1, dtype=torch.bool, device=ctx.device)
+                    has_target = torch.zeros(B, 1, dtype=torch.bool, device=ctx.device)
+                else:
+                    seq_emb = torch.zeros(B, 1, MAX_SEQ_DIM, device=ctx.device)
+                    target_emb = bank[batch_idx].unsqueeze(1)
+                    has_seq = torch.zeros(B, 1, dtype=torch.bool, device=ctx.device)
+                    has_target = torch.ones(B, 1, dtype=torch.bool, device=ctx.device)
+                modality_ids = torch.full((B, 1), mod_id, dtype=torch.long, device=ctx.device)
+                mode_ids = torch.full((B, 1), mode_id, dtype=torch.long, device=ctx.device)
                 pert_mask = torch.ones(B, 1, dtype=torch.bool, device=ctx.device)
                 action = ctx.biojepa.composer(seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask)
                 targets = torch.arange(n_genes, device=ctx.device).unsqueeze(0).expand(B, -1)
@@ -1068,29 +1048,52 @@ def _perturbation_retrieval(ctx, n_eval=100):
         return np.concatenate(all_pred, axis=0)
 
     def cos_sim(a, b):
-        '''Compute cosine similarity between rows of matrix a and vector b.'''
         a_n = a / (np.linalg.norm(a, axis=-1, keepdims=True) + 1e-8)
         b_n = b / (np.linalg.norm(b) + 1e-8)
         return np.dot(a_n, b_n)
 
-    eval_perts = pert_ids[:min(len(pert_ids), n_eval)]
-    ranks = []
-    for pid in tqdm(eval_perts, desc='perturbation_retrieval: Evaluating'):
-        sims = cos_sim(predict_all_deltas(mean_control_states[pid]), mean_real_deltas[pid])
-        sorted_by_similarity = np.argsort(sims)[::-1]
-        rank = int(np.where(sorted_by_similarity == pid)[0][0]) + 1
-        ranks.append(rank)
-
-    ranks = np.array(ranks)
+    results_by_type = {}
     K_VALUES = [1, 5, 10, 20, 50]
 
-    print(f'perturbation_retrieval: MRR={np.mean(1.0/ranks):.4f}, Median_rank={np.median(ranks):.0f}')
+    for bank_name, bank_info in retrieval_banks.items():
+        n_bank = bank_info['bank'].shape[0]
+        if bank_name == 'target_only':
+            type_keys = [k for k in pert_keys if k[0] < 0 and k[1] >= 0]
+            idx_pos = 1
+        else:
+            mod_id = bank_info['mod_id']
+            type_keys = [k for k in pert_keys if k[0] >= 0 and k[2] == mod_id]
+            idx_pos = 0
 
-    return {
-        'config': {'test_perturbations_evaluated': len(eval_perts), 'total_perturbations_in_bank': n_perturbations, 'genes': n_genes},
-        'metrics': {'mrr': float(np.mean(1.0/ranks)), 'median_rank': float(np.median(ranks)), 'mean_rank': float(np.mean(ranks))},
-        'recall_at_k': {str(k): {'recall': float(np.mean(ranks <= k)), 'vs_random': float(np.mean(ranks <= k) / (k / n_perturbations))} for k in K_VALUES}
-    }
+        eval_keys = type_keys[:min(len(type_keys), n_eval)]
+        if not eval_keys:
+            results_by_type[bank_name] = {'n_test': 0, 'n_evaluated': 0}
+            continue
+
+        ranks = []
+        for key in tqdm(eval_keys, desc=f'perturbation_retrieval ({bank_name})'):
+            lookup_idx = key[idx_pos]
+            if lookup_idx < 0 or lookup_idx >= n_bank:
+                continue
+            preds = predict_all_deltas(mean_control_states[key], bank_info)
+            sims = cos_sim(preds, mean_real_deltas[key])
+            rank = int(np.where(np.argsort(sims)[::-1] == lookup_idx)[0][0]) + 1
+            ranks.append(rank)
+
+        if ranks:
+            ranks = np.array(ranks)
+            results_by_type[bank_name] = {
+                'mrr': float(np.mean(1.0/ranks)),
+                'median_rank': float(np.median(ranks)),
+                'n_evaluated': len(ranks),
+                'n_bank': n_bank,
+                'recall_at_k': {str(k): float(np.mean(ranks <= k)) for k in K_VALUES if k <= n_bank}
+            }
+            print(f'perturbation_retrieval ({bank_name}): MRR={results_by_type[bank_name]["mrr"]:.4f}')
+        else:
+            results_by_type[bank_name] = {'n_test': 0, 'n_evaluated': 0}
+
+    return {'by_type': results_by_type}
 
 
 def _uncertainty_calibration(ctx, n_bins=10):
@@ -1100,6 +1103,8 @@ def _uncertainty_calibration(ctx, n_bins=10):
     real_deltas = inf['sample_real_deltas']
     sample_logvars = inf['sample_logvars']
     pert_ids = inf['sample_pert_ids']
+    target_ids = inf['sample_target_ids']
+    pert_mods = inf['sample_pert_mods']
 
     sample_mse = np.mean((pred_deltas - real_deltas)**2, axis=1)
     sample_unc = sample_logvars.mean(axis=1)
@@ -1130,9 +1135,10 @@ def _uncertainty_calibration(ctx, n_bins=10):
         ece += bin_weight * abs(bin_unc_mean - bin_err_mean)
 
     pert_unc, pert_err = defaultdict(list), defaultdict(list)
-    for i, pid in enumerate(pert_ids):
-        pert_unc[pid].append(sample_unc[i])
-        pert_err[pid].append(sample_mse[i])
+    for i in range(len(pert_ids)):
+        key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]))
+        pert_unc[key].append(sample_unc[i])
+        pert_err[key].append(sample_mse[i])
     pert_unc_arr = np.array([np.mean(pert_unc[p]) for p in pert_unc])
     pert_err_arr = np.array([np.mean(pert_err[p]) for p in pert_err])
     pert_pearson, _ = pearsonr(pert_unc_arr, pert_err_arr)
@@ -1188,26 +1194,35 @@ def _moa_matching(ctx):
                 if gene.upper() not in gene_to_pathway:
                     gene_to_pathway[gene.upper()] = pathway
 
-    pert_to_pathway = {pid: gene_to_pathway[gene] for pid, gene in id_to_gene.items() if gene in gene_to_pathway}
-    test_perts = set(inf['pert_ids'])
-    valid_perts = [pid for pid in pert_to_pathway if pid in test_perts]
+    test_keys = set(inf['pert_keys'])
+    seq_idx_to_keys = defaultdict(list)
+    for key in test_keys:
+        seq_idx_to_keys[key[0]].append(key)
 
-    pathway_to_perts = defaultdict(list)
-    for pid in valid_perts:
-        pathway_to_perts[pert_to_pathway[pid]].append(pid)
-    valid_pathways = {p: perts for p, perts in pathway_to_perts.items() if len(perts) >= 3}
+    valid_keys = []
+    key_to_pathway = {}
+    for seq_idx, gene in id_to_gene.items():
+        if gene in gene_to_pathway and seq_idx in seq_idx_to_keys:
+            for key in seq_idx_to_keys[seq_idx]:
+                valid_keys.append(key)
+                key_to_pathway[key] = gene_to_pathway[gene]
+
+    pathway_to_keys = defaultdict(list)
+    for key in valid_keys:
+        pathway_to_keys[key_to_pathway[key]].append(key)
+    valid_pathways = {p: keys for p, keys in pathway_to_keys.items() if len(keys) >= 3}
 
     if len(valid_pathways) < 2:
         return {'error': 'Not enough valid pathways'}
 
-    all_perts = [pid for perts in valid_pathways.values() for pid in perts]
-    pert_to_idx = {pid: i for i, pid in enumerate(all_perts)}
-    delta_matrix = np.array([inf['mean_pred_deltas'][pid] for pid in all_perts])
+    all_keys = [k for keys in valid_pathways.values() for k in keys]
+    key_to_idx = {k: i for i, k in enumerate(all_keys)}
+    delta_matrix = np.array([inf['mean_pred_deltas'][k] for k in all_keys])
     sim_matrix = cosine_similarity(delta_matrix)
 
     within_sims, between_sims = [], []
-    for pathway, perts in valid_pathways.items():
-        idx = [pert_to_idx[p] for p in perts]
+    for pathway, keys in valid_pathways.items():
+        idx = [key_to_idx[k] for k in keys]
         for i in range(len(idx)):
             for j in range(i + 1, len(idx)):
                 within_sims.append(sim_matrix[idx[i], idx[j]])
@@ -1216,9 +1231,9 @@ def _moa_matching(ctx):
     for i, p1 in enumerate(pathways):
         for j in range(i + 1, len(pathways)):
             p2 = pathways[j]
-            for pid1 in valid_pathways[p1]:
-                for pid2 in valid_pathways[p2]:
-                    between_sims.append(sim_matrix[pert_to_idx[pid1], pert_to_idx[pid2]])
+            for k1 in valid_pathways[p1]:
+                for k2 in valid_pathways[p2]:
+                    between_sims.append(sim_matrix[key_to_idx[k1], key_to_idx[k2]])
 
     within_sims, between_sims = np.array(within_sims), np.array(between_sims)
     mean_within, mean_between = np.mean(within_sims), np.mean(between_sims)
@@ -1228,7 +1243,7 @@ def _moa_matching(ctx):
     print(f'moa_matching: Within={mean_within:.4f}, Between={mean_between:.4f}, Ratio={ratio:.3f}x')
 
     return {
-        'config': {'n_pathways': len(valid_pathways), 'n_perturbations': len(all_perts)},
+        'config': {'n_pathways': len(valid_pathways), 'n_perturbations': len(all_keys)},
         'similarity': {'mean_within_pathway': float(mean_within), 'mean_between_pathway': float(mean_between), 'similarity_ratio': float(ratio), 'mann_whitney_p': float(p_val), 'n_within_pairs': len(within_sims), 'n_between_pairs': len(between_sims)}
     }
 
@@ -1443,7 +1458,7 @@ def _paired_alignment_quality(ctx):
 def _mode_sensitivity(ctx):
     '''Does FiLM conditioning on mode differentiate perturbation effects?'''
     inf = ctx.alignment_inference
-    seq_bank = ctx.get_dna_bank()
+    seq_bank = ctx.seq_banks.get('dna') if ctx.seq_banks else None
     if seq_bank is None:
         return {'error': 'No DNA sequence bank available'}
 
@@ -1457,8 +1472,11 @@ def _mode_sensitivity(ctx):
 
     mode_actions = {}
     with torch.no_grad():
-        seq_emb = torch.zeros(n_sample, 1, 1536, device=ctx.device)
-        seq_emb[:, 0, :seq_bank.shape[-1]] = seq_bank[sample_idx]
+        seq_emb = torch.zeros(n_sample, 1, MAX_SEQ_DIM, device=ctx.device)
+        emb = seq_bank[sample_idx]
+        if emb.shape[-1] < MAX_SEQ_DIM:
+            emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
+        seq_emb[:, 0, :] = emb
         modality_ids = torch.zeros(n_sample, 1, dtype=torch.long, device=ctx.device)
         pert_mask = torch.ones(n_sample, 1, dtype=torch.bool, device=ctx.device)
 
@@ -1510,15 +1528,18 @@ def _fusion_quality(ctx):
     n_test = len(seq_idx)
 
     with torch.no_grad():
-        dna_bank = ctx.get_dna_bank()
-        target_bank = ctx.get_target_bank()
+        dna_bank = ctx.seq_banks.get('dna') if ctx.seq_banks else None
+        target_bank = ctx.target_bank
         if dna_bank is None or target_bank is None:
             return {'error': 'Feature banks not available'}
 
-        seq_emb = torch.zeros(n_test, 1, 1536, device=ctx.device)
+        seq_emb = torch.zeros(n_test, 1, MAX_SEQ_DIM, device=ctx.device)
         for i, s in enumerate(seq_idx):
             if s < dna_bank.shape[0]:
-                seq_emb[i, 0, :dna_bank.shape[-1]] = dna_bank[s]
+                emb = dna_bank[s]
+                if emb.shape[-1] < MAX_SEQ_DIM:
+                    emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
+                seq_emb[i, 0, :] = emb
 
         target_emb = torch.zeros(n_test, 1, target_bank.shape[-1], device=ctx.device)
         for i, t in enumerate(target_idx):
@@ -1542,8 +1563,6 @@ def _fusion_quality(ctx):
     fused_var = float(np.var(fused_np, axis=0).mean())
     seq_var = float(np.var(seq_np, axis=0).mean())
     target_var = float(np.var(target_np, axis=0).mean())
-
-    import torch.nn.functional as F
     fused_norm = F.normalize(fused_actions, dim=1)
     seq_norm = F.normalize(seq_only_actions, dim=1)
     target_norm = F.normalize(target_only_actions, dim=1)
@@ -1568,8 +1587,8 @@ def _missing_data_robustness(ctx):
         return {'error': 'No target embeddings available for robustness test'}
 
     target_norm = inf['target_actions_norm']
-    dna_bank = ctx.get_dna_bank()
-    target_bank = ctx.get_target_bank()
+    dna_bank = ctx.seq_banks.get('dna') if ctx.seq_banks else None
+    target_bank = ctx.target_bank
     if dna_bank is None or target_bank is None:
         return {'error': 'Feature banks not available'}
 
@@ -1582,10 +1601,13 @@ def _missing_data_robustness(ctx):
         return {'error': 'Not enough test pairs'}
 
     with torch.no_grad():
-        seq_emb = torch.zeros(n_test, 1, 1536, device=ctx.device)
+        seq_emb = torch.zeros(n_test, 1, MAX_SEQ_DIM, device=ctx.device)
         for i, s in enumerate(seq_idx):
             if s < dna_bank.shape[0]:
-                seq_emb[i, 0, :dna_bank.shape[-1]] = dna_bank[s]
+                emb = dna_bank[s]
+                if emb.shape[-1] < MAX_SEQ_DIM:
+                    emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
+                seq_emb[i, 0, :] = emb
 
         target_emb = torch.zeros(n_test, 1, target_bank.shape[-1], device=ctx.device)
         for i, t in enumerate(target_idx):
@@ -1618,7 +1640,6 @@ def _missing_data_robustness(ctx):
         ).squeeze(1)
 
     def retrieval_mrr(query_actions, target_bank_norm, correct_targets):
-        import torch.nn.functional as F
         query_norm = F.normalize(query_actions, dim=1)
         sim_matrix = torch.mm(query_norm, target_bank_norm.T).cpu().numpy()
         reciprocal_ranks = []
@@ -1653,8 +1674,8 @@ def _multi_pert_alignment(ctx):
     if 'dna_actions' not in inf or 'target_actions' not in inf:
         return {'error': 'Need sequence and target actions for multi-pert test'}
 
-    dna_bank = ctx.get_dna_bank()
-    target_bank = ctx.get_target_bank()
+    dna_bank = ctx.seq_banks.get('dna') if ctx.seq_banks else None
+    target_bank = ctx.target_bank
     if dna_bank is None or target_bank is None:
         return {'error': 'Feature banks not available'}
 
@@ -1678,7 +1699,7 @@ def _multi_pert_alignment(ctx):
             if s1 >= dna_bank.shape[0] or s2 >= dna_bank.shape[0] or t1 >= target_bank.shape[0] or t2 >= target_bank.shape[0]:
                 continue
 
-            seq_emb_single = torch.zeros(1, 1, 1536, device=ctx.device)
+            seq_emb_single = torch.zeros(1, 1, MAX_SEQ_DIM, device=ctx.device)
             seq_emb_single[0, 0, :dna_bank.shape[-1]] = dna_bank[s1]
             target_emb_single = target_bank[t1].unsqueeze(0).unsqueeze(0)
             mod_single = torch.zeros(1, 1, dtype=torch.long, device=ctx.device)
@@ -1692,7 +1713,7 @@ def _multi_pert_alignment(ctx):
             sim_single = torch.nn.functional.cosine_similarity(seq_pooled_single, target_pooled_single, dim=1).item()
             single_pert_sims.append(sim_single)
 
-            seq_emb_double = torch.zeros(1, 2, 1536, device=ctx.device)
+            seq_emb_double = torch.zeros(1, 2, MAX_SEQ_DIM, device=ctx.device)
             seq_emb_double[0, 0, :dna_bank.shape[-1]] = dna_bank[s1]
             seq_emb_double[0, 1, :dna_bank.shape[-1]] = dna_bank[s2]
             target_emb_double = torch.zeros(1, 2, target_bank.shape[-1], device=ctx.device)

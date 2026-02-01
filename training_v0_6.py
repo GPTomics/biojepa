@@ -6,7 +6,7 @@ from pathlib import Path
 
 from biojepa_v0_6 import BioJepa, BioJepaConfig
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
-from config_v0_6 import PretrainConfig, AlignmentConfig, FullTrainingConfig, DecoderConfig, DataConfig
+from config_v0_6 import PretrainConfig, AlignmentConfig, FullTrainingConfig, DecoderConfig, DataConfig, MAX_SEQ_DIM
 
 
 def create_model(model_cfg: BioJepaConfig, device) -> BioJepa:
@@ -43,7 +43,7 @@ def load_feature_banks(data_cfg: DataConfig, device):
     return seq_banks, target_bank
 
 
-def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=1536):
+def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=MAX_SEQ_DIM):
     '''Look up sequence embeddings from banks based on modality.
 
     Args:
@@ -65,10 +65,18 @@ def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=1536):
         bank = seq_banks[mod_key]
         mod_mask = (modality == mod_id) & (seq_idx >= 0)
         if mod_mask.any():
-            valid_indices = seq_idx[mod_mask].clamp(0, bank.shape[0] - 1)
-            emb = bank[valid_indices]
-            emb_dim = emb.shape[-1]
-            seq_emb[mod_mask, :emb_dim] = emb
+            raw_indices = seq_idx[mod_mask]
+            in_bounds = raw_indices < bank.shape[0]
+            if not in_bounds.all():
+                n_oob = (~in_bounds).sum().item()
+                print(f'Warning: {n_oob} {mod_key} seq indices out of bounds (max valid={bank.shape[0]-1}), using zeros')
+            valid_mask_subset = mod_mask.clone()
+            valid_mask_subset[mod_mask] = in_bounds
+            if valid_mask_subset.any():
+                emb = bank[raw_indices[in_bounds]]
+                if emb.shape[-1] < max_seq_dim:
+                    emb = F.pad(emb, (0, max_seq_dim - emb.shape[-1]))
+                seq_emb[valid_mask_subset] = emb
 
     return seq_emb
 
@@ -90,8 +98,15 @@ def get_target_embeddings(target_idx, target_bank):
     target_emb = torch.zeros(B, N, D, device=device)
     valid_mask = target_idx >= 0
     if valid_mask.any():
-        valid_indices = target_idx[valid_mask].clamp(0, target_bank.shape[0] - 1)
-        target_emb[valid_mask] = target_bank[valid_indices]
+        raw_indices = target_idx[valid_mask]
+        in_bounds = raw_indices < target_bank.shape[0]
+        if not in_bounds.all():
+            n_oob = (~in_bounds).sum().item()
+            print(f'Warning: {n_oob} target indices out of bounds (max valid={target_bank.shape[0]-1}), using zeros')
+        final_mask = valid_mask.clone()
+        final_mask[valid_mask] = in_bounds
+        if final_mask.any():
+            target_emb[final_mask] = target_bank[raw_indices[in_bounds]]
 
     return target_emb
 
@@ -355,7 +370,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig) -> BenchmarkDecoder:
+def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig) -> tuple[BenchmarkDecoder, dict]:
     '''Train linear decoder on action-conditioned predictions.
 
     Uses the full prediction pipeline: student encoder -> composer -> predictor.
@@ -448,4 +463,4 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
                 'step': step
             }, checkpoint_dir / f'biojepa_v0_6_decoder_final.pt')
 
-    return decoder
+    return decoder, {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
