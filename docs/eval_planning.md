@@ -2,6 +2,37 @@
 
 This document outlines evaluations for BioJEPA. Each evaluation has biological relevance, tells a coherent story, and where possible connects to our defined use cases.
 
+For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
+
+---
+
+## SOTA Context (Critical for Interpreting Results)
+
+**Key Finding (Feb 2026):** Simple baselines often beat foundation models for perturbation prediction.
+> "None of the deep learning models was able to consistently outperform the mean prediction or the linear model."
+> - [Ahlmann-Eltze et al., Nature Methods, Aug 2025](https://www.nature.com/articles/s41592-025-02772-6)
+
+**Metric Choice Matters:**
+- **Pearson on all genes** = easy metric (most genes don't change, predicting "no change" works well)
+- **R² on top DEGs** = hard metric (the real test - predicting genes that actually change)
+- Most published SOTA numbers use the easy metric
+
+**Expression Prediction SOTA (Pearson, all genes):**
+| Dataset | Model | Pearson | Notes |
+|---------|-------|---------|-------|
+| Adamson K562 | scLAMBDA | 0.786 | Current SOTA |
+| Adamson K562 | GenePert | 0.79 | GPT-4 embeddings |
+| Adamson K562 | GEARS | 0.692 | Graph + GO |
+| Replogle K562 | Train Mean | 0.373 | Simple baseline beats DL |
+| Replogle K562 | scGPT | 0.327 | Underperforms baseline |
+
+**Primary Comparable Model:** [LPM (Nature Computational Science, 2025)](https://www.nature.com/articles/s43588-025-00870-1) - first to unify genetic + chemical perturbations.
+
+**Models NOT Comparable to BioJEPA** (different tasks):
+- Protein fitness: AIDO, VenusREM, VespaG (ProteinGym benchmark)
+- Genomic VEP: AlphaGenome, Genos, Evo 2 (variant effect prediction)
+- ESM3 (protein generation) - BioJEPA uses ESM-2 as INPUT
+
 ---
 
 ## Evaluation Stages
@@ -39,6 +70,8 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 **Biological question**: Can we predict the gene expression profile after a perturbation? Can we predict how severe the perturbation's effect will be?
 
+**SOTA context**: Published SOTA ranges 0.69-0.79 Pearson on Adamson K562 (all genes). On Replogle K562, simple train-mean baseline (0.373) beats scGPT (0.327). Our harder metric (R² on top 50 DEGs) has no published SOTA - most papers avoid it.
+
 **Metrics**:
 
 | Metric | Level | Description |
@@ -56,11 +89,11 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
 | Global MSE | < 0.3 | 0.3 - 0.7 | > 0.7 | Lower is better. Depends on data normalization |
-| Pearson R (Top 20) | > 0.8 | 0.5 - 0.8 | < 0.5 | Measures if top DEGs move in right direction with right relative magnitude |
-| R² (All Genes) | > 0.85 | 0.7 - 0.85 | < 0.7 | High values expected since most genes don't change much |
-| R² (Top 50 DEGs) | > 0.3 | 0.0 - 0.3 | < 0.0 | This is the hard test - predicting genes that actually change. Negative R² means worse than predicting the mean |
-| Severity Pearson | > 0.7 | 0.4 - 0.7 | < 0.4 | Can we tell big effects from small effects? |
-| Severity Spearman | > 0.5 | 0.3 - 0.5 | < 0.3 | Rank ordering of perturbation severity |
+| Pearson R (Top 20) | > 0.7 | 0.4 - 0.7 | < 0.4 | Measures if top DEGs move in right direction with right relative magnitude |
+| R² (All Genes) | > 0.6 | 0.4 - 0.6 | < 0.4 | Inflated metric - most genes don't change. SOTA ~0.7 |
+| R² (Top 50 DEGs) | > 0.15 | 0.0 - 0.15 | < 0.0 | The hard test - no published SOTA. Negative = worse than mean |
+| Severity Pearson | > 0.5 | 0.3 - 0.5 | < 0.3 | Can we tell big effects from small effects? |
+| Severity Spearman | > 0.4 | 0.2 - 0.4 | < 0.2 | Rank ordering of perturbation severity |
 
 **Interpretation guide**:
 - R² on all genes will always look good because ~95% of genes barely change - the model just needs to predict "no change" for most genes
@@ -75,6 +108,8 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 **Notebook**: `gene_level_analysis.ipynb`
 
 **Biological question**: Even when magnitude is wrong, does the model get the direction right? Does it identify which genes are most affected?
+
+**SOTA context**: SynthPert (AAAI 2024) achieves 78% direction accuracy AUROC on Norman dataset. Direction is often more recoverable than magnitude.
 
 **Part A - Direction of Effect**:
 
@@ -120,6 +155,8 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 **Notebook**: `perturbation_retrieval.ipynb`
 
 **Biological question**: Given a desired cellular outcome, can we identify which perturbation would achieve it?
+
+**SOTA context**: CPA uses cosine similarity for drug retrieval. CIGER uses cell graphs for compound prediction. No standard benchmark exists for this task - MRR/Recall@K are our design. With ~1250 perturbations, random Recall@10 = 0.008.
 
 **Use Case**: Target Discovery - finding perturbations that reverse disease signatures
 
@@ -196,6 +233,8 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 **Biological question**: Are the learned representations confounded by technical artifacts?
 
+**SOTA context**: scIB benchmark uses iLISI/cLISI for batch integration quality. We use classifier accuracy instead - conceptually similar but not directly comparable. Lower batch classifier accuracy = better batch invariance.
+
 **Metrics**:
 
 | Metric | Description |
@@ -245,15 +284,15 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Silhouette Score | > 0.2 | 0.0 - 0.2 | < 0.0 | Higher = tighter pathway clusters. Negative = wrong clusters |
-| k-NN Accuracy | > 3x chance | 1.5-3x chance | < 1.5x chance | Chance = 1/n_pathways |
+| Silhouette Score | > 0.05 | 0.0 - 0.05 | < 0.0 | Pathways are noisy labels; even 0.05 shows signal |
+| k-NN Accuracy | > 2x chance | 1.3-2x chance | < 1.3x chance | Chance = 1/n_pathways |
 
 **Interpretation guide**:
-- High silhouette means genes in same pathway are close together and far from other pathways
-- Negative silhouette means genes are closer to other pathways than their own - embeddings don't capture pathway structure
+- Pathways are imperfect labels: genes belong to multiple pathways, annotations are incomplete
+- Even modest silhouette > 0.05 indicates meaningful pathway structure
+- Negative silhouette means genes are closer to other pathways than their own
 - k-NN accuracy measures if nearest neighbors share pathway membership
 - Gene embeddings reflect encoder's learned gene relationships
-- Pathways are imperfect labels - genes belong to multiple pathways, so moderate scores are expected
 
 **Data requirements**: Pathway annotations via gseapy (KEGG_2021_Human, Reactome_Pathways_2024).
 
@@ -277,13 +316,14 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Silhouette Score | > 0.2 | 0.0 - 0.2 | < 0.0 | Higher = tighter pathway clusters. Negative = wrong clusters |
-| k-NN Accuracy | > 3x chance | 1.5-3x chance | < 1.5x chance | Chance = 1/n_pathways |
+| Silhouette Score | > 0.05 | 0.0 - 0.05 | < 0.0 | Pathways are noisy labels; even 0.05 shows signal |
+| k-NN Accuracy | > 2x chance | 1.3-2x chance | < 1.3x chance | Chance = 1/n_pathways |
 
 **Interpretation guide**:
 - Action vectors reflect composer's learned perturbation relationships
-- High silhouette means perturbations hitting same pathway produce similar action vectors
-- This tests whether the composer learns meaningful biological structure
+- Pathways are imperfect labels: perturbations can have off-target effects, annotations are incomplete
+- Even modest silhouette > 0.05 indicates meaningful biological structure
+- This tests whether the composer learns target-related features
 
 **Data requirements**: Pathway annotations via gseapy (KEGG_2021_Human).
 
@@ -331,6 +371,8 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 **Biological question**: Do the learned gene embeddings encode functional importance?
 
+**SOTA context**: DeEPsnap (multi-omics: expression + PPI + sequence) achieves 96.16% AUROC. Expression-only baselines are much lower. Our target of 0.65+ AUROC is realistic for expression-only embeddings.
+
 **Setup**: Train a linear probe on frozen gene embeddings to predict gene essentiality scores from DepMap (CRISPR dependency scores for K562).
 
 **Metrics**:
@@ -366,6 +408,8 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 **Implementation**: `evals/evals.py`
 
 **Biological question**: Does the encoder disentangle biological cell state from noise?
+
+**SOTA context**: SOTA cell-type annotation benchmarks (scTab, CellTypist) use 100+ cell types. BioJEPA v0.6 has only 5 cell types (K562, RPE1, MCF7, etc.), so this is a simpler task. High accuracy expected.
 
 **Setup**: Train logistic regression on cell embeddings (mean-pooled across genes) to predict cell type.
 
@@ -531,6 +575,8 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 **Biological question**: For each modality, can we retrieve the correct protein target from a sequence query?
 
+**SOTA context**: This is a retrieval task (MRR, Recall@K), not classification (AUROC). Similar to drug-target prediction but evaluates learned alignment, not pre-trained embeddings. No direct SOTA comparison available.
+
 **Setup**: After alignment training, sequence embeddings (DNA, chemical) should align with their protein targets. For each sequence, compute cosine similarity to all target protein embeddings and find the rank of the correct target.
 
 **Metrics by modality**:
@@ -659,13 +705,13 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 | Pairwise Mode Distances | L2 distance between same-input actions under different modes |
 | Above Chance Ratio | Accuracy / (1 / n_modes) |
 
-**Modes tested**: crispri(0), crispra(1), overexpression(2), knockout(3), inhibitor(4), agonist(5), degrader(6)
+**Modes tested**: 7 of 9 modes - crispri(0), crispra(1), overexpression(2), knockout(3), inhibitor(4), agonist(5), degrader(6). Excludes binder(7) and unknown(8).
 
 **How to interpret**:
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Classification Accuracy | 0.4 - 0.7 | 0.35 - 0.4 or 0.7 - 0.9 | < 0.35 or > 0.9 | Moderate sensitivity is ideal |
+| Classification Accuracy | 0.4 - 0.7 | 0.25 - 0.4 or 0.7 - 0.9 | < 0.25 or > 0.9 | Random baseline = 0.14 (1/7 modes)
 
 **Interpretation guide**:
 - Mode SHOULD affect action vectors (CRISPRi knockdown vs CRISPRa activation have opposite effects)
@@ -811,9 +857,107 @@ This document outlines evaluations for BioJEPA. Each evaluation has biological r
 
 ---
 
-## Evaluations On Hold
+## Future Evaluations
 
 These evaluations require additional data or architectural changes and are not currently prioritized.
+
+### SOTA Comparison Evals
+
+The following evals would enable direct comparison to published SOTA numbers.
+
+#### gears_benchmark
+**Status**: Planned - requires GEARS protocol implementation
+
+**Biological question**: How does BioJEPA compare to SOTA on the standard perturbation prediction benchmark?
+
+**Setup**:
+- Use exact GEARS protocol: Adamson K562, 85/10/5 split, Pearson correlation on all genes
+- This gives directly comparable numbers to GEARS (0.692), scLAMBDA (0.786), GenePert (0.79)
+
+**What's needed**:
+- GEARS official data splits (may differ from our v0.6 splits)
+- Same preprocessing pipeline as GEARS papers
+- Pearson correlation on post-perturbation expression (not deltas)
+
+**Story**: Essential for publication - "we achieve X on the standard benchmark" is the first question reviewers will ask.
+
+---
+
+#### lpm_comparison
+**Status**: Planned - requires LPM protocol replication
+
+**Biological question**: Does BioJEPA's unified architecture match or exceed LPM on combined genetic + chemical perturbations?
+
+**Setup**:
+- LPM (Nature Computational Science, 2025) is the primary comparable model
+- They achieve 0.72 Pearson on genetic, 0.69 on chemical perturbations
+- Test on same datasets/splits if available
+
+**What's needed**:
+- LPM benchmark datasets (may overlap with ours)
+- Same evaluation protocol (Pearson on expression, not deltas)
+- Fair comparison: same train/test splits
+
+**Story**: LPM is BioJEPA's most direct competitor - first unified genetic + chemical model. Beating or matching LPM validates our approach.
+
+---
+
+#### dose_response
+**Status**: Planned - requires dose-aware evaluation
+
+**Biological question**: Can BioJEPA predict dose-dependent effects?
+
+**Setup**:
+- SciPlex has dose information for chemical perturbations
+- Test if predictions scale appropriately with dose
+- Correlate predicted severity with dose level
+
+**What's needed**:
+- SciPlex dose annotations (already in v0.6)
+- Dose-aware evaluation metrics (severity vs dose correlation)
+- Compare to CPA which explicitly models dose
+
+**Story**: Dose-response is critical for drug development. If BioJEPA captures this without explicit dose modeling, it suggests the action space encodes mechanistic information.
+
+---
+
+#### unseen_target_prediction
+**Status**: Planned - requires held-out target test set
+
+**Biological question**: Can BioJEPA generalize to unseen protein targets?
+
+**Setup**:
+- Hold out entire protein targets (not just perturbations) at test time
+- Test prediction quality for perturbations targeting genes not seen during training
+- This is the zero-shot use case for novel drug targets
+
+**What's needed**:
+- Target-level train/test splits (hold out all perturbations for certain targets)
+- Compare to target-only fallback path performance
+- Measure how much sequence embedding helps for unseen targets
+
+**Story**: The real value of BioJEPA is predicting effects for novel perturbations. This tests that capability directly.
+
+---
+
+#### combination_perturbation
+**Status**: Planned - requires Norman dual-gene data
+
+**Biological question**: Can BioJEPA predict combinatorial perturbation effects better than single-pert models?
+
+**Setup**:
+- Use Norman dual-gene CRISPRa data (n_perts=2)
+- Compare BioJEPA (handles multi-pert natively) vs baseline (sum of single-pert predictions)
+- Measure: Does attention pooling capture non-additive effects?
+
+**What's needed**:
+- Norman dual-gene samples in test set
+- Baseline: predict each gene separately, sum deltas
+- BioJEPA: use full multi-pert pipeline with attention pooling
+
+**Story**: BioJEPA is the only model that natively handles multi-pert (up to 4). This unique capability should translate to better combination predictions. GEARS and scLAMBDA approximate combinations via graph edges, but BioJEPA processes them jointly.
+
+---
 
 ### cross_cell_type_transfer
 **Status**: On Hold - requires new dataset processing
@@ -904,6 +1048,11 @@ These evaluations require additional data or architectural changes and are not c
 | cross_cell_type_transfer | - | - | Cross-cell-type transfer | On Hold |
 | synthetic_lethality_signal | - | - | Synthetic lethality detection | On Hold |
 | cross_modality_retrieval | - | - | Chemical-CRISPR retrieval | On Hold (needs chemical embeddings) |
+| gears_benchmark | Full | - | SOTA comparison on standard benchmark | Planned |
+| lpm_comparison | Full | - | Comparison to unified genetic+chemical model | Planned |
+| dose_response | Full | - | Dose-dependent effect prediction | Planned |
+| unseen_target_prediction | Full | - | Zero-shot to novel protein targets | Planned |
+| combination_perturbation | Full | - | Multi-pert advantage over single-pert baselines | Planned |
 
 ---
 

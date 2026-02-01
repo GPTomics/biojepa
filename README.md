@@ -39,33 +39,59 @@ Beyond therapeutics, the model's learned representations enable biological disco
 
 ## Current Performance
 
-| Metric | v0.5 | v0.4 | v0.3 | v0.2 |
-| - | - | - | - | - |
-| **Global MSE** | **0.489** | 0.498 | 0.515 | 0.790 |
-| **Pearson R (Top 20)** | 0.919 | **0.927** | 0.921 | 0.605 |
-| **R² All (mean/median)** | 0.930 / 0.940 | 0.918 / 0.927 | 0.902 / 0.910 | **0.942 / 0.956** |
-| **R² Top 50 (mean/median)** | 0.066 / **0.341** | **0.096** / 0.325 | 0.060 / 0.255 | -0.027 / 0.269 |
-| Severity Correlation | 0.835 | **0.870** | — | — |
-| Direction Accuracy (All) | **89.7%** | 87.7% | — | — |
-| Direction Accuracy (Top 50) | 28.5% | **34.0%** | — | — |
-| DEG Precision@20 | **4.8%** | 3.1% | — | — |
-| DEG vs Random | **12.0x** | 7.8x | — | — |
-| Retrieval MRR | 0.007 | **0.010** | — | — |
-| Retrieval Recall@10 | **3.0%** | 2.0% | — | — |
-| Uncertainty ECE | 0.281 | **0.135** | — | — |
-| Uncertainty Monotonicity | 0.56 | **0.78** | — | — |
-| Batch Invariance Ratio | 0.167 | **0.215** | — | — |
-| Pathway Gene k-NN | **30.7%** | 27.4% | — | — |
-| Pathway Action k-NN | **41.0%** | 37.9% | — | — |
-| MOA Similarity Ratio | 1.005 | **1.006** | — | — |
-| Essential AUROC | **0.741** | 0.707 | — | — |
-| Essential Pearson | **0.408** | 0.275 | — | — |
+| Metric | v0.5 | v0.4 | v0.3 | v0.2 | Context |
+| - | - | - | - | - | - |
+| **Global MSE** | **0.489** | 0.498 | 0.515 | 0.790 | Lower is better |
+| **Pearson R (Top 20)** | 0.919 | **0.927** | 0.921 | 0.605 | On genes that change most |
+| **R² All (mean/median)** | 0.930 / 0.940 | 0.918 / 0.927 | 0.902 / 0.910 | **0.942 / 0.956** | Inflated metric (most genes don't change) |
+| **R² Top 50 (mean/median)** | 0.066 / **0.341** | **0.096** / 0.325 | 0.060 / 0.255 | -0.027 / 0.269 | The hard test - no published SOTA |
+| Severity Correlation | 0.835 | **0.870** | — | — | Predicting effect magnitude |
+| Direction Accuracy (All) | **89.7%** | 87.7% | — | — | UP/DOWN/UNCHANGED classification |
+| Direction Accuracy (Top 50) | 28.5% | **34.0%** | — | — | Harder - on genes that change |
+| DEG Precision@20 | **4.8%** | 3.1% | — | — | Random baseline ~0.4% |
+| DEG vs Random | **12.0x** | 7.8x | — | — | Improvement over chance |
+| Retrieval MRR | 0.007 | **0.010** | — | — | ~1250 perturbations to rank |
+| Retrieval Recall@10 | **3.0%** | 2.0% | — | — | Random = 0.8% |
+| Uncertainty ECE | 0.281 | **0.135** | — | — | Lower is better |
+| Uncertainty Monotonicity | 0.56 | **0.78** | — | — | Higher is better |
+| Batch Invariance Ratio | 0.167 | **0.215** | — | — | Higher = more bio vs technical |
+| Pathway Gene k-NN | **30.7%** | 27.4% | — | — | Pathway structure in gene embeddings |
+| Pathway Action k-NN | **41.0%** | 37.9% | — | — | Pathway structure in action vectors |
+| MOA Similarity Ratio | 1.005 | **1.006** | — | — | >1 = same-pathway more similar |
+| Essential AUROC | **0.741** | 0.707 | — | — | Predicting gene essentiality |
+| Essential Pearson | **0.408** | 0.275 | — | — | Correlation with DepMap scores |
 
 Extended evals (rows without bold) available for v0.4+.
 
+**Notes:** R² on all genes will always look good because ~95% of genes barely change. The real test is R² on Top 50 DEGs. Most published SOTA uses Pearson on all genes (easy metric). Retrieval metrics are against ~1250 perturbations. For detailed metric interpretation, see `docs/eval_planning.md`.
+
+### SOTA Context
+
+**Published SOTA (Pearson, all genes, Adamson K562):**
+| Model | Pearson | Notes |
+|-------|---------|-------|
+| scLAMBDA | 0.786 | Current SOTA |
+| GenePert | 0.79 | GPT-4 embeddings |
+| GEARS | 0.692 | Graph + GO |
+
+**Key finding:** Simple baselines often beat foundation models. On Replogle K562, a train-mean baseline (0.373 Pearson) outperforms scGPT (0.327). See [Ahlmann-Eltze et al., Nature Methods 2025](https://www.nature.com/articles/s41592-025-02772-6).
+
+For detailed SOTA analysis, see `docs/sota_evals.md`.
+
+### What Makes BioJEPA Different
+
+| Capability | BioJEPA | GEARS | scLAMBDA | LPM |
+|------------|---------|-------|----------|-----|
+| Genetic perturbations | Yes | Yes | Yes | Yes |
+| Chemical perturbations | Yes | No | No | Yes |
+| Multi-pert (>1 simultaneous) | Up to 4 | 2 (graph) | No | No |
+| Uncertainty quantification | Yes (Gaussian NLL) | No | No | No |
+| Missing data fallback | Yes | N/A | N/A | Partial |
+| Mode conditioning | 9 modes (FiLM) | No | No | No |
+
 ## v0.6 Architecture (In Progress)
 
-**Training:** 6 datasets (~5.5M cells), 16,384 genes. Config: embd=256, heads=4, layers=6, lat_dim=320, mod_dim=64, max_perts=4.
+**Training:** 6 datasets (~5.5M cells, see Datasets table below), 16,384 genes. Config: embd=256, heads=4, layers=6, lat_dim=320, mod_dim=64, max_perts=4.
 
 1. **Dual-Pathway Perturbation Encoding with Sequence-Target Fusion:** The ActionComposer separately encodes the perturbation sequence (sgRNA, protein, or chemical) and its biological target (protein), then fuses them via concat+MLP when both are available. Sequences use modality-specific projectors (DNA via [NucleotideTransformer](https://huggingface.co/InstaDeepAI/NTv3_650M_pre): 1536->D, protein via [ESM-2](https://huggingface.co/facebook/esm2_t6_8M_UR50D): 320->D, chemical via [ChemMRL](https://huggingface.co/Derify/ChemMRL): 1024->D). When only one input is available, it passes through directly; a learned unknown embedding handles missing data.
     1. Benefit: Cleanly separates "what is perturbing" (sequence) from "what is being perturbed" (target), enabling alignment training between sequences and targets while gracefully handling variable data availability across perturbation types.
