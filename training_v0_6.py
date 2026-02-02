@@ -149,13 +149,13 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
             model.train()
 
-        if step > 0 and (step + 1) % steps_per_epoch == 0 and not last_step:
+        if step > 0 and (step % 10000 ==0 or (step + 1) % steps_per_epoch == 0) and not last_step:
             epoch = (step + 1) // steps_per_epoch
             torch.save({
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_pt_epoch_{epoch}.pt')
+            }, checkpoint_dir / f'biojepa_v0_6_pt_epoch_{epoch}_step{step}.pt')
 
         b = train_loader.next_batch()
         optimizer.zero_grad()
@@ -327,13 +327,14 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
             model.train()
 
-        if step > 0 and (step + 1) % steps_per_epoch == 0 and not last_step:
+
+        if step > 0 and (step % 10000 ==0 or (step + 1) % steps_per_epoch == 0) and not last_step:
             epoch = (step + 1) // steps_per_epoch
             torch.save({
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_full_epoch_{epoch}.pt')
+            }, checkpoint_dir / f'biojepa_v0_6_full_epoch_{epoch}_step{step}.pt')
 
         b = train_loader.next_batch()
 
