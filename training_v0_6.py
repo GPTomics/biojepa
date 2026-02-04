@@ -14,6 +14,19 @@ def create_model(model_cfg: BioJepaConfig, device) -> BioJepa:
     return model
 
 
+def maybe_compile(model, compile_model=False):
+    if not (compile_model and torch.cuda.is_available() and hasattr(torch, 'compile')):
+        return model
+    try:
+        model.student = torch.compile(model.student)
+        model.teacher = torch.compile(model.teacher)
+        model.predictor = torch.compile(model.predictor)
+        model.masked_predictor = torch.compile(model.masked_predictor)
+    except Exception as e:
+        print(f'torch.compile failed: {e}, using eager mode')
+    return model
+
+
 def load_feature_banks(data_cfg: DataConfig, device):
     '''Load sequence and target embedding banks for v0.6 multi-pert format.
 
@@ -111,9 +124,12 @@ def get_target_embeddings(target_idx, target_bank):
     return target_emb
 
 
-def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device, checkpoint_dir, model_cfg: BioJepaConfig) -> dict:
+def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device, checkpoint_dir, model_cfg: BioJepaConfig, use_amp=False, use_fused_optimizer=False) -> dict:
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    use_autocast = use_amp and device.type == 'cuda'
+    fused = use_fused_optimizer and torch.cuda.is_available()
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
     if cfg.epochs is not None:
@@ -124,7 +140,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
         raise ValueError('Either epochs or n_steps must be specified')
     print(f'Pretraining: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
     model.enable_all_gradients()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=cfg.warmup_pct
     )

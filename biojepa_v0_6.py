@@ -192,13 +192,6 @@ class ActionComposer(nn.Module):
         # Target projector (always protein ESM-2)
         self.target_projector = nn.Linear(config.target_dim, D)
 
-        # Fusion MLP (concat -> D)
-        self.fusion_mlp = nn.Sequential(
-            nn.Linear(2 * D, 2 * D),
-            nn.GELU(),
-            nn.Linear(2 * D, D)
-        )
-
         # Unknown embedding (for when neither seq nor target available)
         self.unknown_embedding = nn.Parameter(torch.randn(1, D) * 0.02)
 
@@ -208,9 +201,9 @@ class ActionComposer(nn.Module):
         self.film_shift = nn.Linear(config.mode_dim, D)
 
         # Initialize FiLM to identity
-        nn.init.zeros_(self.film_scale.weight)
+        nn.init.normal_(self.film_scale.weight, std=0.02) #add some noise
         nn.init.zeros_(self.film_scale.bias)
-        nn.init.zeros_(self.film_shift.weight)
+        nn.init.normal_(self.film_shift.weight, std=0.02) #add some noise
         nn.init.zeros_(self.film_shift.bias)
 
         # Attention pooling for alignment (query is learned)
@@ -221,24 +214,10 @@ class ActionComposer(nn.Module):
         return self.target_projector(target_emb)
 
     def _fuse(self, seq_lat, target_lat, has_seq, has_target):
-        B = has_seq.shape[0]
-        D = self.config.latent_dim
-        device = has_seq.device
+        result = seq_lat + target_lat
 
-        result = torch.zeros(B, D, device=device)
+        neither_mask = ~(has_seq | has_target)
 
-        both_mask = has_seq & has_target
-        seq_only_mask = has_seq & ~has_target
-        target_only_mask = ~has_seq & has_target
-        neither_mask = ~has_seq & ~has_target
-
-        if both_mask.any():
-            combined = torch.cat([seq_lat[both_mask], target_lat[both_mask]], dim=-1)
-            result[both_mask] = self.fusion_mlp(combined)
-        if seq_only_mask.any():
-            result[seq_only_mask] = seq_lat[seq_only_mask]
-        if target_only_mask.any():
-            result[target_only_mask] = target_lat[target_only_mask]
         if neither_mask.any():
             result[neither_mask] = self.unknown_embedding.expand(neither_mask.sum(), -1)
 
@@ -254,13 +233,13 @@ class ActionComposer(nn.Module):
     def forward(self, seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask):
         '''
         Args:
-            seq_emb: [B, N_pert, max_seq_dim] - sequence embeddings (padded)
-            target_emb: [B, N_pert, target_dim] - target embeddings
-            modality_ids: [B, N_pert] - 0=dna, 1=protein, 2=chemical
-            mode_ids: [B, N_pert] - perturbation mode
-            has_seq: [B, N_pert] - bool, whether seq is available
-            has_target: [B, N_pert] - bool, whether target is available
-            pert_mask: [B, N_pert] - bool, valid perturbations (vs padding)
+            seq_emb: - sequence embeddings (padded)
+            target_emb: - target embeddings
+            modality_ids: - 0=dna, 1=protein, 2=chemical
+            mode_ids: - perturbation mode
+            has_seq: - bool, whether seq is available
+            has_target: - bool, whether target is available
+            pert_mask: - bool, valid perturbations (vs padding)
         Returns:
             action_latents: [B, N_pert, D]
         '''
@@ -504,8 +483,9 @@ class ACPredictor(nn.Module):
         predictions = sequence[:, C_Len:, :]
 
         mu = self.head_mu(predictions)
-        logvar = self.head_logvar(predictions)
-        logvar = torch.clamp(logvar, min=-10, max=2)
+        with torch.autocast(device_type='cuda', enabled=False):
+            logvar = self.head_logvar(predictions.float())
+            logvar = torch.clamp(logvar, min=-10, max=2)
 
         return mu, logvar
 
@@ -599,6 +579,7 @@ class BioJepa(nn.Module):
             p.requires_grad = True
 
     def vicreg_loss(self, x, y):
+        x, y = x.float(), y.float()
         B = x.shape[0]
         num_features = x.shape[-1]
         
@@ -712,12 +693,13 @@ class BioJepa(nn.Module):
         pred_logvar_masked = pred_logvar[mask_idx]
         target_masked = target_latents[mask_idx]
 
-        rec_loss = F.gaussian_nll_loss(
-            pred_mu_masked,
-            target_masked,
-            torch.exp(pred_logvar_masked),
-            reduction='mean'
-        )
+        with torch.autocast(device_type='cuda', enabled=False):
+            rec_loss = F.gaussian_nll_loss(
+                pred_mu_masked.float(),
+                target_masked.float(),
+                torch.exp(pred_logvar_masked),
+                reduction='mean'
+            )
 
         reg_loss = self.vicreg_loss(
             pred_mu.reshape(-1, self.config.embed_dim),
