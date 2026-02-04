@@ -245,6 +245,7 @@ class ActionComposer(nn.Module):
         return result
 
     def _apply_mode(self, content, mode_ids):
+        mode_ids = mode_ids.clamp(0, self.config.num_modes - 1)
         mode_vecs = self.mode_embedding(mode_ids)
         scale = self.film_scale(mode_vecs)
         shift = self.film_shift(mode_vecs)
