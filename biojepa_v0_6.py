@@ -202,6 +202,9 @@ class ActionComposer(nn.Module):
         self.film_scale = nn.Linear(config.mode_dim, D)
         self.film_shift = nn.Linear(config.mode_dim, D)
 
+        # latent masking
+        self.latent_dropout = nn.Dropout(p=0.15)
+
         # Initialize FiLM to identity
         nn.init.normal_(self.film_scale.weight, std=0.02) #add some noise
         nn.init.zeros_(self.film_scale.bias)
@@ -216,7 +219,10 @@ class ActionComposer(nn.Module):
         return self.target_projector(target_emb)
 
     def _fuse(self, seq_lat, target_lat, has_seq, has_target):
-        result = seq_lat + target_lat
+        seq_masked = self.latent_dropout(seq_lat)
+        target_masked = self.latent_dropout(target_lat)
+        
+        result = seq_masked + target_masked
 
         neither_mask = ~(has_seq | has_target)
 

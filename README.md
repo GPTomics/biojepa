@@ -107,6 +107,9 @@ For detailed SOTA analysis, see `docs/sota_evals.md`.
     1. Benefit: Multiplicative gating improves gradient flow and model expressivity. The gating mechanism has biological relevance as gene regulation inherently involves activation/inhibition gating.
 7. **Output Gating for Linear Attention:** Added a learnable sigmoid gate to the linear attention output in BioLinearAttention. The gate is computed from the query input (`sigmoid(gate(x))`) and multiplies the attention output before the final projection. Critically, gating is applied only to self-attention (`kv is None`), not cross-attention, to preserve the perturbation response pathway in the ACPredictor.
     1. Benefit: Provides per-gene control over attention contribution, allowing the model to learn which genes should dominate attention patterns. Proven effective for linear attention architectures (Gated DeltaNet, Qwen3-Next, Kimi K2).
+8. **Latent Masking for Action Predictor:** Added masking on our action predictor so that a portion of (`n=0.15`) of the input vector is masked during training of the ACPredictor. 
+    1. Benefit: Pushes the model to better learn the relationship between perturbations and cell states, improving prediction accuracy over implicit positional learning.
+
 
 ## v0.5 Architecture
 
