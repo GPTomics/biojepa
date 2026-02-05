@@ -10,6 +10,20 @@ torch.manual_seed(1337)
 
 
 # utils
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        x_fp32 = x.float()
+        norm = x_fp32 * torch.rsqrt(x_fp32.pow(2).mean(-1, keepdim=True) + self.eps)
+        return (norm * self.weight).type_as(x)
+
+def _make_divisible(v, divisor=64):
+    return max(divisor, int(v + divisor / 2) // divisor * divisor)
+
 def init_weights_robust(module):
     if isinstance(module, (nn.Linear, nn.Embedding)):
         if isinstance(module, nn.Embedding):
@@ -20,9 +34,11 @@ def init_weights_robust(module):
         nn.init.trunc_normal_(module.weight, mean=0.0, std=std, a=-2*std, b=2*std)
         if hasattr(module, 'bias') and module.bias is not None:
             nn.init.zeros_(module.bias)
-    elif isinstance(module, nn.LayerNorm):
-        nn.init.zeros_(module.bias)
+    elif isinstance(module, RMSNorm):
         nn.init.ones_(module.weight)
+    elif isinstance(module, BioLinearAttention):
+        nn.init.zeros_(module.gate.weight)
+        nn.init.constant_(module.gate.bias, 2.0)
 
 def off_diagonal(x):
     n, m = x.shape
@@ -36,46 +52,38 @@ class BioLinearAttention(nn.Module):
         super().__init__()
         self.config = config
         assert config.embed_dim % config.heads == 0
-        
+
         self.head_dim = config.embed_dim // config.heads
         self.heads = config.heads
-        
+
         self.q_proj = nn.Linear(config.embed_dim, config.embed_dim)
         self.k_proj = nn.Linear(config.embed_dim, config.embed_dim)
         self.v_proj = nn.Linear(config.embed_dim, config.embed_dim)
-        
         self.c_proj = nn.Linear(config.embed_dim, config.embed_dim)
+        self.gate = nn.Linear(config.embed_dim, config.embed_dim)
 
     def forward(self, x, kv=None):
-
         B, T_q, C = x.size()
         kv_input = kv if kv is not None else x
         T_kv = kv_input.size(1)
-        
-        # 1. Project
+
         q = self.q_proj(x).view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(kv_input).view(B, T_kv, self.heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(kv_input).view(B, T_kv, self.heads, self.head_dim).transpose(1, 2)
-        
-        # 2. Apply Feature Map (ELU + 1)
+
         q = F.elu(q) + 1.0
         k = F.elu(k) + 1.0
-        
-        # 3. Linear Attention Calculation: Q @ (K.T @ V)
-        # Aggregate global context from K and V
+
         kv_matmul = k.transpose(-2, -1) @ v
-        
-        # Normalization term (denominator)
         k_sum = k.sum(dim=-2).unsqueeze(-1)
         z = 1.0 / (q @ k_sum + 1e-6)
-
-        # Compute Output (numerator * denominator)
         y = (q @ kv_matmul) * z
-        
-        # 4. Reassemble
+
         y = y.transpose(1, 2).contiguous().view(B, T_q, C)
+        if kv is None:
+            y = torch.sigmoid(self.gate(x)) * y
         y = self.c_proj(y)
-        
+
         return y
 
 class GaussianFourierProjection(nn.Module):
@@ -87,26 +95,24 @@ class GaussianFourierProjection(nn.Module):
         x_proj = (2 * np.pi * x) @ self.B
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
-class MLP(nn.Module):
+class SwiGLU(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Linear(config.embed_dim, int(config.mlp_ratio * config.embed_dim))
-        self.gelu = nn.GELU(approximate='tanh')
-        self.c_proj = nn.Linear(int(config.mlp_ratio * config.embed_dim), config.embed_dim)
+        hidden_dim = _make_divisible(int(config.embed_dim * config.mlp_ratio * 2 / 3))
+        self.w1 = nn.Linear(config.embed_dim, hidden_dim, bias=False)
+        self.w2 = nn.Linear(config.embed_dim, hidden_dim, bias=False)
+        self.w3 = nn.Linear(hidden_dim, config.embed_dim, bias=False)
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
-        return x
+        return self.w3(F.silu(self.w1(x)) * self.w2(x))
 
 class CellStateBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.embed_dim)
+        self.ln_1 = RMSNorm(config.embed_dim)
         self.attn = BioLinearAttention(config)
-        self.ln_2 = nn.LayerNorm(config.embed_dim)
-        self.mlp = MLP(config)
+        self.ln_2 = RMSNorm(config.embed_dim)
+        self.mlp = SwiGLU(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -116,14 +122,14 @@ class CellStateBlock(nn.Module):
 class PredictorBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.embed_dim)
+        self.ln_1 = RMSNorm(config.embed_dim)
         self.action_attn = BioLinearAttention(config)
 
-        self.ln_2 = nn.LayerNorm(config.embed_dim)
+        self.ln_2 = RMSNorm(config.embed_dim)
         self.self_attn = BioLinearAttention(config)
 
-        self.ln_3 = nn.LayerNorm(config.embed_dim)
-        self.mlp = MLP(config)
+        self.ln_3 = RMSNorm(config.embed_dim)
+        self.mlp = SwiGLU(config)
 
     def forward(self, x, action_emb):
 
@@ -145,17 +151,13 @@ class MaskedPredictor(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
-        # Shallow transformer for reconstruction (typically fewer layers than encoder)
-        self.blocks = nn.ModuleList([
-            CellStateBlock(config) for _ in range(config.n_layer) 
-        ])
 
-        self.norm = nn.LayerNorm(config.embed_dim)
+        self.blocks = nn.ModuleList([CellStateBlock(config) for _ in range(config.n_layer)])
+        self.norm = RMSNorm(config.embed_dim)
         self.pred_head = nn.Linear(config.embed_dim, config.embed_dim)
 
         self.apply(init_weights_robust)
-                    
+
     def forward(self, x):
         for block in self.blocks:
             x = block(x)
@@ -377,11 +379,9 @@ class CellStateEncoder(nn.Module):
         # Total Count Injector
         self.total_count_proj = nn.Linear(1, config.embed_dim)
 
-        # Transfomer
         self.blocks = nn.ModuleList([CellStateBlock(config) for _ in range(config.n_layer)])
-        self.ln_f = nn.LayerNorm(config.embed_dim)
+        self.ln_f = RMSNorm(config.embed_dim)
 
-        # Initiation 
         self.apply(init_weights_robust)
         nn.init.constant_(self.linear_scaler.weight, config.film_linear_multiple)
         nn.init.constant_(self.fourier_input_scaler.weight, 0.1)
@@ -437,28 +437,20 @@ class ACPredictor(nn.Module):
         super().__init__()
         self.config = config
 
-        # Perturbation Embedding
         self.adapter = nn.Sequential(
             nn.Linear(config.action_dim, config.embed_dim),
-            nn.LayerNorm(config.embed_dim),
+            RMSNorm(config.embed_dim),
             nn.GELU(),
             nn.Linear(config.embed_dim, config.embed_dim)
         )
-        
-        # Learnable Queries for all tokens (genes)
-        self.mask_queries = nn.Embedding(config.num_genes, config.embed_dim)
-        
-        self.blocks = nn.ModuleList([
-            PredictorBlock(config) for _ in range(config.n_layer)
-            ])
-        
-        self.final_norm = nn.LayerNorm(config.embed_dim)
 
-        # Stochastic Heads (Mean & LogVar)
+        self.mask_queries = nn.Embedding(config.num_genes, config.embed_dim)
+        self.blocks = nn.ModuleList([PredictorBlock(config) for _ in range(config.n_layer)])
+        self.final_norm = RMSNorm(config.embed_dim)
+
         self.head_mu = nn.Linear(config.embed_dim, config.embed_dim)
         self.head_logvar = nn.Linear(config.embed_dim, config.embed_dim)
-        
-        # initiation
+
         self.apply(init_weights_robust)
 
     def forward(self, context_latents, action_latents, target_indices):

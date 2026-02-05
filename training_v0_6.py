@@ -46,7 +46,12 @@ def load_feature_banks(data_cfg: DataConfig, device):
 
     chem_path = seq_banks_dir / 'chemical_embeddings.npy'
     if chem_path.exists():
-        seq_banks['chemical'] = torch.from_numpy(np.load(chem_path)).float().to(device)
+        chem = torch.from_numpy(np.load(chem_path)).float().to(device)
+        if chem.shape[-1] < MAX_SEQ_DIM:
+            print(f'Warning: Chemical embeddings need padding ({chem.shape[-1]} -> {MAX_SEQ_DIM}). '
+                  f'Run data_prep/prepad_embeddings.py for permanent fix.')
+            chem = F.pad(chem, (0, MAX_SEQ_DIM - chem.shape[-1]))
+        seq_banks['chemical'] = chem
         print(f'Loaded chemical embeddings: {seq_banks["chemical"].shape}')
 
     target_path = target_banks_dir / 'protein_targets.npy'
@@ -159,7 +164,8 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
                 val_loss_steps = 25
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
-                    val_loss = model.forward_pretrain(b.x, b.total)
+                    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+                        val_loss = model.forward_pretrain(b.x, b.total)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
@@ -175,7 +181,8 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
 
         b = train_loader.next_batch()
         optimizer.zero_grad()
-        loss = model.forward_pretrain(b.x, b.total)
+        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+            loss = model.forward_pretrain(b.x, b.total)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -203,7 +210,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: AlignmentConfig, device, checkpoint_dir) -> dict:
+def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: AlignmentConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False) -> dict:
     '''Run dual-path alignment training.
 
     The alignment loader provides (seq_idx, target_idx, modality, mode) pairs.
@@ -211,6 +218,9 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
     '''
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    use_autocast = use_amp and device.type == 'cuda'
+    fused = use_fused_optimizer and torch.cuda.is_available()
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
     if cfg.epochs is not None:
@@ -226,7 +236,7 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
     for p in model.composer.parameters():
         p.requires_grad = True
 
-    optimizer = torch.optim.AdamW(model.composer.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = torch.optim.AdamW(model.composer.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05
     )
@@ -252,7 +262,8 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
                     modality_ids = b.modality.unsqueeze(1)
                     pert_mask = torch.ones(B, 1, dtype=torch.bool, device=device)
 
-                    val_loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask)
+                    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+                        val_loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
@@ -268,7 +279,8 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
         pert_mask = torch.ones(B, 1, dtype=torch.bool, device=device)
 
         optimizer.zero_grad()
-        loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask)
+        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+            loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask)
         loss.backward()
         optimizer.step()
         scheduler.step()
@@ -288,10 +300,13 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: FullTrainingConfig, device, checkpoint_dir) -> dict:
+def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: FullTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False) -> dict:
     '''Run full action-conditioned training with multi-pert format.'''
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    use_autocast = use_amp and device.type == 'cuda'
+    fused = use_fused_optimizer and torch.cuda.is_available()
 
     model.freeze_encoders()
     for p in model.predictor.parameters():
@@ -311,7 +326,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
     optimizer = torch.optim.AdamW([
         {'params': model.predictor.parameters(), 'lr': cfg.predictor_lr},
         {'params': model.composer.parameters(), 'lr': cfg.predictor_lr * 0.1}
-    ], weight_decay=cfg.weight_decay)
+    ], weight_decay=cfg.weight_decay, fused=fused)
 
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=[cfg.predictor_lr, cfg.predictor_lr * 0.1], total_steps=max_steps, pct_start=0.05
@@ -336,8 +351,9 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
                     target_emb = get_target_embeddings(b.target_idx, target_bank)
                     pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
 
-                    val_loss = model(b.control, b.control_total, b.case, b.case_total,
-                                     seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
+                    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+                        val_loss = model(b.control, b.control_total, b.case, b.case_total,
+                                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
@@ -359,8 +375,9 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
 
         optimizer.zero_grad()
-        loss = model(b.control, b.control_total, b.case, b.case_total,
-                     seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
+        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+            loss = model(b.control, b.control_total, b.case, b.case_total,
+                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -387,7 +404,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig) -> tuple[BenchmarkDecoder, dict]:
+def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig, use_amp=False, use_fused_optimizer=False) -> tuple[BenchmarkDecoder, dict]:
     '''Train linear decoder on action-conditioned predictions.
 
     Uses the full prediction pipeline: student encoder -> composer -> predictor.
@@ -395,6 +412,9 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
     '''
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    use_autocast = use_amp and device.type == 'cuda'
+    fused = use_fused_optimizer and torch.cuda.is_available()
 
     decoder_config = BenchmarkDecoderConfig(embed_dim=model_cfg.embed_dim)
     decoder = BenchmarkDecoder(decoder_config).to(device)
@@ -407,7 +427,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
     else:
         raise ValueError('Either epochs or n_steps must be specified')
 
-    optimizer = torch.optim.AdamW(decoder.parameters(), lr=cfg.lr)
+    optimizer = torch.optim.AdamW(decoder.parameters(), lr=cfg.lr, fused=fused)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05)
 
     loss_fn = nn.MSELoss()
@@ -434,14 +454,14 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
                     target_emb = get_target_embeddings(b.target_idx, target_bank)
                     pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
 
-                    z_context = model.student(b.control, b.control_total, mask_idx=None)
-                    action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
-                    target_indices = torch.arange(N, device=device).expand(B, N)
-                    z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
-
-                    pred_delta = decoder(z_pred_mu) - decoder(z_context)
-                    real_delta = b.case - b.control
-                    val_loss = loss_fn(pred_delta, real_delta)
+                    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+                        z_context = model.student(b.control, b.control_total, mask_idx=None)
+                        action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
+                        target_indices = torch.arange(N, device=device).expand(B, N)
+                        z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
+                        pred_delta = decoder(z_pred_mu) - decoder(z_context)
+                        real_delta = b.case - b.control
+                        val_loss = loss_fn(pred_delta, real_delta)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Decoder Step {step} | val loss: {avg_val_loss:.4f}')
@@ -454,16 +474,17 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
         target_emb = get_target_embeddings(b.target_idx, target_bank)
         pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
             z_context = model.student(b.control, b.control_total, mask_idx=None)
             action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
             target_indices = torch.arange(N, device=device).expand(B, N)
             z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
 
         optimizer.zero_grad()
-        pred_delta = decoder(z_pred_mu) - decoder(z_context)
-        real_delta = b.case - b.control
-        loss = loss_fn(pred_delta, real_delta)
+        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+            pred_delta = decoder(z_pred_mu) - decoder(z_context)
+            real_delta = b.case - b.control
+            loss = loss_fn(pred_delta, real_delta)
         loss.backward()
         optimizer.step()
         scheduler.step()

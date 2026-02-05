@@ -187,7 +187,12 @@ class EvalContext:
                 print(f'Loaded DNA seq bank: {self._seq_banks["dna"].shape}')
             chem_path = seq_banks_dir / 'chemical_embeddings.npy'
             if chem_path.exists():
-                self._seq_banks['chemical'] = torch.from_numpy(np.load(chem_path)).float().to(self.device)
+                chem = torch.from_numpy(np.load(chem_path)).float().to(self.device)
+                if chem.shape[-1] < MAX_SEQ_DIM:
+                    print(f'Warning: Chemical embeddings need padding ({chem.shape[-1]} -> {MAX_SEQ_DIM}). '
+                          f'Run data_prep/prepad_embeddings.py for permanent fix.')
+                    chem = F.pad(chem, (0, MAX_SEQ_DIM - chem.shape[-1]))
+                self._seq_banks['chemical'] = chem
                 print(f'Loaded chemical seq bank: {self._seq_banks["chemical"].shape}')
         return self._seq_banks
 
@@ -244,9 +249,7 @@ class EvalContext:
                 if self.seq_banks and 'dna' in self.seq_banks:
                     dna_emb = self.seq_banks['dna']
                     n_dna = dna_emb.shape[0]
-                    seq_emb = torch.zeros(n_dna, 1, MAX_SEQ_DIM, device=self.device)
-                    padded_dna = F.pad(dna_emb, (0, MAX_SEQ_DIM - dna_emb.shape[-1])) if dna_emb.shape[-1] < MAX_SEQ_DIM else dna_emb
-                    seq_emb[:, 0, :] = padded_dna
+                    seq_emb = dna_emb.unsqueeze(1)
                     modality_ids = torch.zeros(n_dna, 1, dtype=torch.long, device=self.device)
                     mode_ids = torch.zeros(n_dna, 1, dtype=torch.long, device=self.device)
                     pert_mask = torch.ones(n_dna, 1, dtype=torch.bool, device=self.device)
@@ -259,9 +262,7 @@ class EvalContext:
                 if self.seq_banks and 'chemical' in self.seq_banks:
                     chem_emb = self.seq_banks['chemical']
                     n_chem = chem_emb.shape[0]
-                    seq_emb = torch.zeros(n_chem, 1, MAX_SEQ_DIM, device=self.device)
-                    padded_chem = F.pad(chem_emb, (0, MAX_SEQ_DIM - chem_emb.shape[-1])) if chem_emb.shape[-1] < MAX_SEQ_DIM else chem_emb
-                    seq_emb[:, 0, :] = padded_chem
+                    seq_emb = chem_emb.unsqueeze(1)
                     modality_ids = torch.full((n_chem, 1), 2, dtype=torch.long, device=self.device)
                     mode_ids = torch.full((n_chem, 1), 4, dtype=torch.long, device=self.device)
                     pert_mask = torch.ones(n_chem, 1, dtype=torch.bool, device=self.device)
@@ -1012,15 +1013,9 @@ def _perturbation_retrieval(ctx, n_eval=100):
 
     retrieval_banks = {}
     if ctx.seq_banks and 'dna' in ctx.seq_banks:
-        dna = ctx.seq_banks['dna']
-        if dna.shape[-1] < MAX_SEQ_DIM:
-            dna = F.pad(dna, (0, MAX_SEQ_DIM - dna.shape[-1]))
-        retrieval_banks['dna'] = {'bank': dna, 'mod_id': 0, 'mode': 0, 'use_seq': True}
+        retrieval_banks['dna'] = {'bank': ctx.seq_banks['dna'], 'mod_id': 0, 'mode': 0, 'use_seq': True}
     if ctx.seq_banks and 'chemical' in ctx.seq_banks:
-        chem = ctx.seq_banks['chemical']
-        if chem.shape[-1] < MAX_SEQ_DIM:
-            chem = F.pad(chem, (0, MAX_SEQ_DIM - chem.shape[-1]))
-        retrieval_banks['chemical'] = {'bank': chem, 'mod_id': 2, 'mode': 4, 'use_seq': True}
+        retrieval_banks['chemical'] = {'bank': ctx.seq_banks['chemical'], 'mod_id': 2, 'mode': 4, 'use_seq': True}
     if ctx.target_bank is not None:
         retrieval_banks['target_only'] = {'bank': ctx.target_bank, 'mod_id': 0, 'mode': 0, 'use_seq': False}
 
@@ -1512,11 +1507,7 @@ def _mode_sensitivity(ctx):
 
     mode_actions = {}
     with torch.no_grad():
-        seq_emb = torch.zeros(n_sample, 1, MAX_SEQ_DIM, device=ctx.device)
-        emb = seq_bank[sample_idx]
-        if emb.shape[-1] < MAX_SEQ_DIM:
-            emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
-        seq_emb[:, 0, :] = emb
+        seq_emb = seq_bank[sample_idx].unsqueeze(1)
         modality_ids = torch.zeros(n_sample, 1, dtype=torch.long, device=ctx.device)
         pert_mask = torch.ones(n_sample, 1, dtype=torch.bool, device=ctx.device)
 
@@ -1576,10 +1567,7 @@ def _fusion_quality(ctx):
         seq_emb = torch.zeros(n_test, 1, MAX_SEQ_DIM, device=ctx.device)
         for i, s in enumerate(seq_idx):
             if s < dna_bank.shape[0]:
-                emb = dna_bank[s]
-                if emb.shape[-1] < MAX_SEQ_DIM:
-                    emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
-                seq_emb[i, 0, :] = emb
+                seq_emb[i, 0] = dna_bank[s]
 
         target_emb = torch.zeros(n_test, 1, target_bank.shape[-1], device=ctx.device)
         for i, t in enumerate(target_idx):
@@ -1644,10 +1632,7 @@ def _missing_data_robustness(ctx):
         seq_emb = torch.zeros(n_test, 1, MAX_SEQ_DIM, device=ctx.device)
         for i, s in enumerate(seq_idx):
             if s < dna_bank.shape[0]:
-                emb = dna_bank[s]
-                if emb.shape[-1] < MAX_SEQ_DIM:
-                    emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
-                seq_emb[i, 0, :] = emb
+                seq_emb[i, 0] = dna_bank[s]
 
         target_emb = torch.zeros(n_test, 1, target_bank.shape[-1], device=ctx.device)
         for i, t in enumerate(target_idx):
@@ -1759,11 +1744,7 @@ def _multi_pert_alignment(ctx):
     with torch.no_grad():
         for idx in single_sample:
             s, t, m = single_pert_samples[idx]
-            seq_emb = torch.zeros(1, 1, MAX_SEQ_DIM, device=ctx.device)
-            emb = dna_bank[s]
-            if emb.shape[-1] < MAX_SEQ_DIM:
-                emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
-            seq_emb[0, 0] = emb
+            seq_emb = dna_bank[s].unsqueeze(0).unsqueeze(0)
             target_emb = target_bank[t].unsqueeze(0).unsqueeze(0)
             mod = torch.zeros(1, 1, dtype=torch.long, device=ctx.device)
             mode = torch.full((1, 1), m, dtype=torch.long, device=ctx.device)
@@ -1786,10 +1767,7 @@ def _multi_pert_alignment(ctx):
             target_emb = torch.zeros(1, n, target_bank.shape[-1], device=ctx.device)
             mode_ids = torch.zeros(1, n, dtype=torch.long, device=ctx.device)
             for j, (s, t, m) in enumerate(perts):
-                emb = dna_bank[s]
-                if emb.shape[-1] < MAX_SEQ_DIM:
-                    emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
-                seq_emb[0, j] = emb
+                seq_emb[0, j] = dna_bank[s]
                 target_emb[0, j] = target_bank[t]
                 mode_ids[0, j] = m
             mod = torch.zeros(1, n, dtype=torch.long, device=ctx.device)
@@ -1898,10 +1876,7 @@ def _target_family_probing(ctx):
                 seq_emb = torch.zeros(n_test, 1, MAX_SEQ_DIM, device=ctx.device)
                 target_emb = torch.zeros(n_test, 1, target_bank_tensor.shape[-1], device=ctx.device)
                 for i, p in enumerate(valid_fused):
-                    emb = dna_bank[p]
-                    if emb.shape[-1] < MAX_SEQ_DIM:
-                        emb = F.pad(emb, (0, MAX_SEQ_DIM - emb.shape[-1]))
-                    seq_emb[i, 0] = emb
+                    seq_emb[i, 0] = dna_bank[p]
                     target_emb[i, 0] = target_bank_tensor[seq_to_target[p]]
                 modality_ids = torch.zeros(n_test, 1, dtype=torch.long, device=ctx.device)
                 mode_ids = torch.zeros(n_test, 1, dtype=torch.long, device=ctx.device)

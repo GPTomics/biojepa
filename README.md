@@ -101,6 +101,12 @@ For detailed SOTA analysis, see `docs/sota_evals.md`.
     1. Benefit: Encodes that the same target can be affected differently depending on the perturbation mechanism (e.g., CRISPRi knockdown vs small molecule inhibitor targeting the same protein).
 4. **Attention Pooling for Alignment:** A learned attention pooling mechanism combines multiple action vectors into a single vector for contrastive alignment training. A learned query attends to all perturbation tokens with masking for variable-length inputs.
     1. Benefit: Enables alignment training on multi-perturbation samples while learning which perturbations are most informative for alignment.
+5. **RMSNorm Normalization:** Replaced LayerNorm with RMSNorm throughout the CellStateEncoder, MaskedPredictor, and ACPredictor. RMSNorm simplifies normalization by removing mean-centering, using only root-mean-square scaling. Implementation uses FP32 upcast for numerical stability during mixed-precision training.
+    1. Benefit: Follows modern transformer best practices (Llama 3, Qwen3, DeepSeek V3, Gemma 3). Reduces parameters, improves compute efficiency, and provides equivalent or better training stability.
+6. **SwiGLU Feed-Forward Networks:** Replaced GELU MLP with SwiGLU (Swish-Gated Linear Unit) in all transformer blocks. Uses three weight matrices with the gating pattern `w3(silu(w1(x)) * w2(x))`, bias=False, and hidden dimension set to `embed_dim * mlp_ratio * 2/3` rounded to multiples of 64 for tensor core efficiency.
+    1. Benefit: Multiplicative gating improves gradient flow and model expressivity. The gating mechanism has biological relevance as gene regulation inherently involves activation/inhibition gating.
+7. **Output Gating for Linear Attention:** Added a learnable sigmoid gate to the linear attention output in BioLinearAttention. The gate is computed from the query input (`sigmoid(gate(x))`) and multiplies the attention output before the final projection. Critically, gating is applied only to self-attention (`kv is None`), not cross-attention, to preserve the perturbation response pathway in the ACPredictor.
+    1. Benefit: Provides per-gene control over attention contribution, allowing the model to learn which genes should dominate attention patterns. Proven effective for linear attention architectures (Gated DeltaNet, Qwen3-Next, Kimi K2).
 
 ## v0.5 Architecture
 
