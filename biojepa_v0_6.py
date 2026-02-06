@@ -238,6 +238,7 @@ class ActionComposer(nn.Module):
         shift = self.film_shift(mode_vecs)
         return content * (1.0 + scale) + shift
 
+    @torch.autocast('cuda', enabled=False)
     def forward(self, seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask):
         '''
         Args:
@@ -291,6 +292,7 @@ class ActionComposer(nn.Module):
 
         return action_latents
 
+    @torch.autocast('cuda', enabled=False)
     def encode_sequence_path(self, seq_emb, modality_ids, mode_ids, pert_mask):
         '''Encode using sequence only (for alignment training)'''
         B, N_pert = modality_ids.shape
@@ -319,6 +321,7 @@ class ActionComposer(nn.Module):
 
         return action_latents
 
+    @torch.autocast('cuda', enabled=False)
     def encode_target_path(self, target_emb, mode_ids, pert_mask):
         '''Encode using target only (for alignment training)'''
         B, N_pert = mode_ids.shape
@@ -409,10 +412,7 @@ class CellStateEncoder(nn.Module):
         x = scaled_x * (1.0 + gamma) + beta
 
         if mask_idx is not None:
-            B, N, D = x.shape
-            mask_token_expand = self.mask_token.expand(B, N, D)
-            
-            x[mask_idx] = mask_token_expand[mask_idx]
+            x = torch.where(mask_idx.unsqueeze(-1), self.mask_token, x)
 
         # 3. Total Count Injection
         x_total_ct = total_counts.unsqueeze(-1)
@@ -574,6 +574,14 @@ class BioJepa(nn.Module):
         for p in self.composer.parameters():
             p.requires_grad = True
         for p in self.predictor.parameters():
+            p.requires_grad = True
+
+    def enable_pretraining_gradients(self):
+        for p in self.parameters():
+            p.requires_grad = False
+        for p in self.student.parameters():
+            p.requires_grad = True
+        for p in self.masked_predictor.parameters():
             p.requires_grad = True
 
     def vicreg_loss(self, x, y):

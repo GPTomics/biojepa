@@ -91,10 +91,11 @@ class EvalContext:
         missing_keys = [k for k in REQUIRED_CONFIG_KEYS if k not in config]
         if missing_keys:
             raise ValueError(f'Missing required config keys: {missing_keys}. Required: {REQUIRED_CONFIG_KEYS}')
-        self.config = {'test_total_examples': 38829, 'pert_latent_dim': 320, 'pert_mode_dim': 64, **config}
+        self.config = {'test_total_examples': 38829, 'pert_latent_dim': 320, 'pert_mode_dim': 64, 'verbose': True, **config}
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.paths = self._get_paths(Path(data_root), Path(checkpoint_root), Path(ref_dir))
-        print(f'Using {self.device}')
+        if self.config['verbose']:
+            print(f'Using {self.device}')
 
         self._biojepa = None
         self._decoder = None
@@ -486,12 +487,13 @@ def run_alignment_evals(ctx):
 
 def _batch_invariance(ctx):
     '''Are representations confounded by batch effects?'''
+    verbose = ctx.config['verbose']
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb, all_batch, all_pert = [], [], []
     with torch.no_grad():
-        for _ in tqdm(range(test_steps), desc='batch_invariance: Extracting embeddings'):
+        for _ in tqdm(range(test_steps), desc='batch_invariance: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             all_emb.append(ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy())
@@ -510,13 +512,16 @@ def _batch_invariance(ctx):
     n_batch, n_pert = len(batch_map), len(pert_map)
     train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=42)
 
-    print('Training batch classifier...')
+    if verbose:
+        print('Training batch classifier...')
     _, _, batch_acc = train_linear_classifier(embeddings[train_idx], batch_labels[train_idx], embeddings[val_idx], batch_labels[val_idx], n_batch, ctx.device, epochs=100)
-    print('Training perturbation classifier...')
+    if verbose:
+        print('Training perturbation classifier...')
     _, _, pert_acc = train_linear_classifier(embeddings[train_idx], pert_labels[train_idx], embeddings[val_idx], pert_labels[val_idx], n_pert, ctx.device, epochs=100)
 
     batch_chance, pert_chance = 1.0 / n_batch, 1.0 / n_pert
-    print(f'batch_invariance: Batch={batch_acc:.4f} ({batch_acc/batch_chance:.1f}x), Pert={pert_acc:.4f} ({pert_acc/pert_chance:.1f}x)')
+    if verbose:
+        print(f'batch_invariance: Batch={batch_acc:.4f} ({batch_acc/batch_chance:.1f}x), Pert={pert_acc:.4f} ({pert_acc/pert_chance:.1f}x)')
 
     return {
         'config': {'samples': len(embeddings), 'embedding_dim': int(embeddings.shape[1]), 'num_batches': n_batch, 'num_perturbations': n_pert},
@@ -528,6 +533,7 @@ def _batch_invariance(ctx):
 
 def _gene_embedding_pathways(ctx):
     '''Do genes in same pathway cluster in learned embeddings?'''
+    verbose = ctx.config['verbose']
     pathway_libs = ctx.pathway_annotations
 
     gene_labels_kegg, pathway_to_genes_kegg = map_genes_to_pathways(ctx.gene_names, pathway_libs['KEGG_2021_Human'], min_pathway_size=15, max_pathway_size=300)
@@ -540,12 +546,14 @@ def _gene_embedding_pathways(ctx):
     react_labels = [gene_labels_react[ctx.gene_names[i].upper()] for i in react_idx]
     react_metrics = compute_pathway_clustering_metrics(ctx.gene_embeddings[react_idx], react_labels, min_samples_per_class=10)
 
-    print(f'gene_embedding_pathways: KEGG sil={kegg_metrics["silhouette_score"]:.4f}, Reactome sil={react_metrics["silhouette_score"]:.4f}')
+    if verbose:
+        print(f'gene_embedding_pathways: KEGG sil={kegg_metrics["silhouette_score"]:.4f}, Reactome sil={react_metrics["silhouette_score"]:.4f}')
     return {'config': {'n_genes': len(ctx.gene_names)}, 'kegg': kegg_metrics, 'reactome': react_metrics}
 
 
 def _essential_gene_prediction(ctx):
     '''Do gene embeddings encode functional importance?'''
+    verbose = ctx.config['verbose']
     depmap_file = ctx.paths['ref_dir'] / 'depmap' / 'CRISPRGeneEffect.csv'
     if not depmap_file.exists():
         return {'error': f'DepMap file not found: {depmap_file}'}
@@ -596,7 +604,8 @@ def _essential_gene_prediction(ctx):
     y_test_bin = (y_test < THRESH).astype(int)
     auroc_test = roc_auc_score(y_test_bin, -y_pred_test)
 
-    print(f'essential_gene_prediction: Pearson={pearson_test:.4f}, AUROC={auroc_test:.4f}')
+    if verbose:
+        print(f'essential_gene_prediction: Pearson={pearson_test:.4f}, AUROC={auroc_test:.4f}')
 
     return {
         'config': {'matched_genes': len(matched_idx), 'train_genes': len(X_train), 'test_genes': len(X_test)},
@@ -607,12 +616,13 @@ def _essential_gene_prediction(ctx):
 
 def _cell_type_probing(ctx):
     '''Can cell type be predicted from cell embeddings?'''
+    verbose = ctx.config['verbose']
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb, all_cell_type, all_batch_id = [], [], []
     with torch.no_grad():
-        for _ in tqdm(range(test_steps), desc='cell_type_probing: Extracting embeddings'):
+        for _ in tqdm(range(test_steps), desc='cell_type_probing: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
@@ -646,13 +656,15 @@ def _cell_type_probing(ctx):
 
     train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=42, stratify=labels)
 
-    print('Training cell type classifier...')
+    if verbose:
+        print('Training cell type classifier...')
     _, val_preds, val_acc = train_linear_classifier(embeddings[train_idx], labels[train_idx], embeddings[val_idx], labels[val_idx], n_classes, ctx.device, epochs=100)
 
     macro_f1 = f1_score(labels[val_idx], val_preds, average='macro')
     chance = 1.0 / n_classes
 
-    print(f'cell_type_probing: Accuracy={val_acc:.4f} ({val_acc/chance:.1f}x chance), Macro F1={macro_f1:.4f}')
+    if verbose:
+        print(f'cell_type_probing: Accuracy={val_acc:.4f} ({val_acc/chance:.1f}x chance), Macro F1={macro_f1:.4f}')
 
     return {
         'config': {'samples': len(embeddings), 'embedding_dim': int(embeddings.shape[1]), 'num_cell_types': n_classes, 'filtered_from': len(unique_types)},
@@ -662,13 +674,15 @@ def _cell_type_probing(ctx):
 
 def _reconstruction(ctx):
     '''Can gene expression be reconstructed from embeddings?'''
+    verbose = ctx.config['verbose']
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
-    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+    recon_samples = min(ctx.config['test_total_examples'], 100)
+    test_steps = recon_samples // ctx.config['batch_size']
     n_genes = ctx.config['num_genes']
 
     all_emb, all_expr = [], []
     with torch.no_grad():
-        for _ in tqdm(range(test_steps), desc='reconstruction: Extracting embeddings'):
+        for _ in tqdm(range(test_steps), desc='reconstruction: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).cpu().numpy()
@@ -702,7 +716,8 @@ def _reconstruction(ctx):
     X_t = torch.from_numpy(X_train[train_subset]).float().to(ctx.device)
     y_t = torch.from_numpy(y_train[train_subset]).float().to(ctx.device)
 
-    print('Training reconstruction MLP...')
+    if verbose:
+        print('Training reconstruction MLP...')
     for _ in range(200):
         opt.zero_grad()
         nn.MSELoss()(mlp(X_t), y_t).backward()
@@ -718,7 +733,8 @@ def _reconstruction(ctx):
     mse = np.mean((y_pred - y_true)**2)
     pearson_r, _ = pearsonr(y_pred, y_true)
 
-    print(f'reconstruction: MSE={mse:.4f}, Pearson R={pearson_r:.4f}')
+    if verbose:
+        print(f'reconstruction: MSE={mse:.4f}, Pearson R={pearson_r:.4f}')
 
     return {
         'config': {'samples': n_samples, 'train_genes': len(train_genes), 'test_genes': len(test_genes), 'embedding_dim': int(embeddings.shape[-1])},
@@ -728,12 +744,13 @@ def _reconstruction(ctx):
 
 def _perturbation_detection(ctx):
     '''Can we distinguish perturbed cells from control cells?'''
+    verbose = ctx.config['verbose']
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     control_emb, case_emb = [], []
     with torch.no_grad():
-        for _ in tqdm(range(test_steps), desc='perturbation_detection: Extracting embeddings'):
+        for _ in tqdm(range(test_steps), desc='perturbation_detection: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             case_x, case_tot = batch.case, batch.case_total
@@ -750,7 +767,8 @@ def _perturbation_detection(ctx):
 
     train_idx, val_idx = train_test_split(np.arange(len(X)), test_size=0.2, random_state=42, stratify=y)
 
-    print('Training perturbation detector...')
+    if verbose:
+        print('Training perturbation detector...')
     classifier, val_preds, val_acc = train_linear_classifier(X[train_idx], y[train_idx], X[val_idx], y[val_idx], num_classes=2, device=ctx.device, epochs=100)
 
     classifier.eval()
@@ -761,7 +779,8 @@ def _perturbation_detection(ctx):
 
     auroc = roc_auc_score(y[val_idx], probs)
 
-    print(f'perturbation_detection: AUROC={auroc:.4f}, Accuracy={val_acc:.4f}')
+    if verbose:
+        print(f'perturbation_detection: AUROC={auroc:.4f}, Accuracy={val_acc:.4f}')
 
     return {
         'config': {'n_control': len(control_emb), 'n_perturbed': len(case_emb), 'embedding_dim': int(control_emb.shape[1])},
@@ -771,12 +790,13 @@ def _perturbation_detection(ctx):
 
 def _embedding_consistency(ctx):
     '''Do replicates of the same perturbation cluster together?'''
+    verbose = ctx.config['verbose']
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb, all_pert = [], []
     with torch.no_grad():
-        for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings'):
+        for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             case_x, case_tot = batch.case, batch.case_total
             case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
@@ -815,7 +835,8 @@ def _embedding_consistency(ctx):
     intra_mean, inter_mean = np.mean(intra_dists), np.mean(inter_dists)
     ratio = inter_mean / intra_mean if intra_mean > 0 else float('inf')
 
-    print(f'embedding_consistency: Intra={intra_mean:.4f}, Inter={inter_mean:.4f}, Ratio={ratio:.2f}x')
+    if verbose:
+        print(f'embedding_consistency: Intra={intra_mean:.4f}, Inter={inter_mean:.4f}, Ratio={ratio:.2f}x')
 
     return {
         'config': {'n_perturbations': len(valid_perts), 'n_intra_pairs': len(intra_dists), 'n_inter_pairs': len(inter_dists)},
@@ -825,12 +846,13 @@ def _embedding_consistency(ctx):
 
 def _latent_space_health(ctx):
     '''Diagnostic metrics for embedding quality.'''
+    verbose = ctx.config['verbose']
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb = []
     with torch.no_grad():
-        for _ in tqdm(range(test_steps), desc='latent_space_health: Extracting embeddings'):
+        for _ in tqdm(range(test_steps), desc='latent_space_health: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
@@ -860,7 +882,8 @@ def _latent_space_health(ctx):
     upper_tri = cos_sim_matrix[np.triu_indices(n_sample, k=1)]
     mean_cos_sim = float(np.mean(upper_tri))
 
-    print(f'latent_space_health: Eff_dim_90={effective_dim_90}/{D}, Mean_var={mean_variance:.4f}, Isotropy={isotropy_ratio:.6f}')
+    if verbose:
+        print(f'latent_space_health: Eff_dim_90={effective_dim_90}/{D}, Mean_var={mean_variance:.4f}, Isotropy={isotropy_ratio:.6f}')
 
     return {
         'config': {'samples': N, 'embedding_dim': D},
