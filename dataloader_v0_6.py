@@ -2,7 +2,8 @@ import torch
 import numpy as np
 import random
 from pathlib import Path
-from collections import namedtuple
+from math import ceil
+from collections import defaultdict, namedtuple
 
 TrainingBatch = namedtuple('TrainingBatch', [
     'control', 'control_total', 'case', 'case_total',
@@ -16,16 +17,18 @@ AlignmentBatch = namedtuple('AlignmentBatch', ['seq_idx', 'target_idx', 'modalit
 PretrainBatch = namedtuple('PretrainBatch', ['x', 'total'])
 
 class _BaseShardLoader:
-    def __init__(self, batch_size, split, data_dir, device, total_samples=None):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, min_dataset_fraction=0.1):
         self.batch_size = batch_size
         self.split = split
         self.device = device
+        self.min_dataset_fraction = min_dataset_fraction
 
         self.data_dir = Path(data_dir)
         self.data_root = self.data_dir / split
 
         self.shards = sorted(list(self.data_root.glob('*.npz')))
         print(f'found {len(self.shards)} shards for split {split}')
+        self._balance_shards()
 
         self.remaining_shards = []
         self.current_shard_idx = -1
@@ -40,6 +43,40 @@ class _BaseShardLoader:
             self.total_samples = total_samples
         else:
             self.total_samples = self.total_samples_in_shard * len(self.shards)
+
+    def _balance_shards(self):
+        if self.split != 'train':
+            return
+        shards_by_dataset = defaultdict(list)
+        unparsed = []
+        for shard in self.shards:
+            parts = shard.stem.split('_')
+            if self.split not in parts:
+                unparsed.append(shard)
+                continue
+            split_idx = parts.index(self.split)
+            if split_idx < 2:
+                unparsed.append(shard)
+                continue
+            dataset = '_'.join(parts[1:split_idx])
+            shards_by_dataset[dataset].append(shard)
+        if len(shards_by_dataset) <= 1:
+            return
+        max_count = max(len(s) for s in shards_by_dataset.values())
+        threshold = ceil(max_count * self.min_dataset_fraction)
+        balanced = list(unparsed)
+        print(f'shard balancing (threshold={threshold}, {self.min_dataset_fraction:.0%} of max={max_count}):')
+        for dataset in sorted(shards_by_dataset):
+            original = shards_by_dataset[dataset]
+            count = len(original)
+            if count >= threshold:
+                balanced.extend(original)
+                print(f'  {dataset}: {count} shards')
+            else:
+                multiplier = ceil(threshold / count)
+                balanced.extend(original * multiplier)
+                print(f'  {dataset}: {count} -> {count * multiplier} shards (x{multiplier})')
+        self.shards = sorted(balanced)
 
     def reset(self):
         self.remaining_shards = list(self.shards)
