@@ -13,6 +13,7 @@ Three entry points:
 '''
 
 import json
+import random
 import torch
 import torch.nn as nn
 import numpy as np
@@ -488,6 +489,19 @@ def run_alignment_evals(ctx):
 def _batch_invariance(ctx):
     '''Are representations confounded by batch effects?'''
     verbose = ctx.config['verbose']
+    eval_seed = ctx.config.get('seed', 1337)
+
+    rng_py = random.getstate()
+    rng_np = np.random.get_state()
+    rng_torch = torch.random.get_rng_state()
+    rng_cuda = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+
+    random.seed(eval_seed)
+    np.random.seed(eval_seed)
+    torch.manual_seed(eval_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(eval_seed)
+
     test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
@@ -510,7 +524,7 @@ def _batch_invariance(ctx):
     pert_labels = np.array([pert_map[p] for p in pert_ids])
 
     n_batch, n_pert = len(batch_map), len(pert_map)
-    train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=42)
+    train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=eval_seed)
 
     if verbose:
         print('Training batch classifier...')
@@ -518,6 +532,12 @@ def _batch_invariance(ctx):
     if verbose:
         print('Training perturbation classifier...')
     _, _, pert_acc = train_linear_classifier(embeddings[train_idx], pert_labels[train_idx], embeddings[val_idx], pert_labels[val_idx], n_pert, ctx.device, epochs=100)
+
+    random.setstate(rng_py)
+    np.random.set_state(rng_np)
+    torch.random.set_rng_state(rng_torch)
+    if rng_cuda is not None:
+        torch.cuda.set_rng_state(rng_cuda)
 
     batch_chance, pert_chance = 1.0 / n_batch, 1.0 / n_pert
     if verbose:
