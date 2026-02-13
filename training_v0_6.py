@@ -2,9 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import json
+import gc
 from pathlib import Path
 
 from biojepa_v0_6 import BioJepa, BioJepaConfig
+from evals.evals import EvalContext, run_pretraining_evals, summarize_pretraining_evals
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from config_v0_6 import PretrainConfig, AlignmentConfig, FullTrainingConfig, DecoderConfig, DataConfig, MAX_SEQ_DIM
 
@@ -129,8 +132,8 @@ def get_target_embeddings(target_idx, target_bank):
     return target_emb
 
 
-def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device, checkpoint_dir, model_cfg: BioJepaConfig, use_amp=False, use_fused_optimizer=False) -> dict:
-    checkpoint_dir = Path(checkpoint_dir)
+def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device, data_cfg: DataConfig, model_cfg: BioJepaConfig, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None) -> dict:
+    checkpoint_dir = Path(data_cfg.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     use_autocast = use_amp and device.type == 'cuda'
@@ -151,6 +154,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
     )
 
     loss_history = []
+    epoch_evals = {}
     total_epoch_loss = 0
     model.train()
 
@@ -200,6 +204,34 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
             print(f'=== Epoch {(step + 1) // steps_per_epoch} Done. Avg Loss: {avg_loss:.5f} ===')
             total_epoch_loss = 0
 
+            epoch = (step + 1) // steps_per_epoch
+            if eval_every_n_epochs and data_cfg.eval_results_dir and epoch % eval_every_n_epochs == 0:
+                print(f'--- Running epoch {epoch} evals ---')
+                eval_config = {
+                    'num_genes': model_cfg.num_genes, 'embed_dim': model_cfg.embed_dim,
+                    'n_layer': model_cfg.n_layer, 'heads': model_cfg.heads,
+                    'batch_size': cfg.batch_size, 'seed': 1337, 'verbose': False,
+                }
+                ckpt_name = 'biojepa_v0_6_pt_final.pt' if last_step else f'biojepa_v0_6_pt_epoch_{epoch}_step{step}.pt'
+                model.eval()
+                eval_ctx = EvalContext(config=eval_config, data_root=data_cfg.data_root, checkpoint_root=data_cfg.data_root, ref_dir=data_cfg.ref_dir)
+                eval_ctx._biojepa = model
+                try:
+                    raw_results = run_pretraining_evals(eval_ctx)
+                    metrics = summarize_pretraining_evals(raw_results)
+                    epoch_evals[epoch] = {'step': step + 1, 'avg_loss': round(avg_loss, 5), 'checkpoint': ckpt_name, 'metrics': metrics}
+                    print(f'Epoch {epoch} metrics: {metrics}')
+                    eval_results_path = Path(data_cfg.eval_results_dir)
+                    eval_results_path.mkdir(parents=True, exist_ok=True)
+                    (eval_results_path / 'pt_epoch_evals.json').write_text(json.dumps(epoch_evals, indent=2))
+                finally:
+                    eval_ctx._biojepa = None
+                    del eval_ctx
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    model.train()
+
         if last_step:
             torch.save({
                 'model': model.state_dict(),
@@ -207,7 +239,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
                 'step': step
             }, checkpoint_dir / f'biojepa_v0_6_pt_final.pt')
 
-    return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
+    return {'loss_history': loss_history, 'epoch_evals': epoch_evals, 'final_loss': loss_history[-1] if loss_history else None}
 
 
 def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: AlignmentConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False) -> dict:

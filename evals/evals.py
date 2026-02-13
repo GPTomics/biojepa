@@ -437,6 +437,30 @@ def save_report(results, output_path='eval_report.json'):
     print(f'Saved report to {report_path}')
 
 
+def summarize_pretraining_evals(eval_results):
+    '''Extract compact metrics dict from verbose eval results.'''
+    summary = {}
+    if 'perturbation_detection' in eval_results:
+        summary['pert_auroc'] = eval_results['perturbation_detection'].get('metrics', {}).get('auroc')
+    if 'latent_space_health' in eval_results:
+        health = eval_results['latent_space_health']
+        summary['eff_dim_90'] = health.get('effective_dimensionality', {}).get('90_percent')
+        summary['dead_dims'] = health.get('variance', {}).get('n_dead_dims')
+    if 'reconstruction' in eval_results:
+        summary['recon_pearson'] = eval_results['reconstruction'].get('metrics', {}).get('pearson_r')
+    if 'batch_invariance' in eval_results:
+        summary['invariance_ratio'] = eval_results['batch_invariance'].get('invariance_ratio')
+    if 'gene_embedding_pathways' in eval_results:
+        summary['kegg_silhouette'] = eval_results['gene_embedding_pathways'].get('kegg', {}).get('silhouette_score')
+    if 'cell_type_probing' in eval_results:
+        summary['cell_type_acc'] = eval_results['cell_type_probing'].get('metrics', {}).get('accuracy')
+    if 'essential_gene_prediction' in eval_results:
+        summary['essential_auroc'] = eval_results['essential_gene_prediction'].get('classification', {}).get('auroc_test')
+    if 'embedding_consistency' in eval_results:
+        summary['consistency_ratio'] = eval_results['embedding_consistency'].get('metrics', {}).get('inter_intra_ratio')
+    return {k: round(v, 4) if isinstance(v, float) else v for k, v in summary.items() if v is not None}
+
+
 # =============================================================================
 # ENTRY POINTS
 # =============================================================================
