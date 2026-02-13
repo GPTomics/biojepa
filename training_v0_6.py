@@ -210,7 +210,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
                 eval_config = {
                     'num_genes': model_cfg.num_genes, 'embed_dim': model_cfg.embed_dim,
                     'n_layer': model_cfg.n_layer, 'heads': model_cfg.heads,
-                    'batch_size': cfg.batch_size, 'seed': 1337, 'verbose': False,
+                    'batch_size': cfg.batch_size, 'verbose': False,
                 }
                 ckpt_name = 'biojepa_v0_6_pt_final.pt' if last_step else f'biojepa_v0_6_pt_epoch_{epoch}_step{step}.pt'
                 model.eval()

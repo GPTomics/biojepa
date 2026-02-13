@@ -333,7 +333,7 @@ class EvalContext:
 
     def _run_test_inference(self):
         '''Run inference on test set. Returns aggregated and per-sample data.'''
-        test_loader = TrainingLoader(batch_size=self.config['batch_size'], split='test', data_dir=self.paths['train_dir'], device=self.device)
+        test_loader = TrainingLoader(batch_size=self.config['batch_size'], split=self.config.get('eval_split', 'test'), data_dir=self.paths['train_dir'], device=self.device)
         test_steps = self.config['test_total_examples'] // self.config['batch_size']
         N = self.config['num_genes']
 
@@ -526,7 +526,7 @@ def _batch_invariance(ctx):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(eval_seed)
 
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb, all_batch, all_pert = [], [], []
@@ -661,7 +661,7 @@ def _essential_gene_prediction(ctx):
 def _cell_type_probing(ctx):
     '''Can cell type be predicted from cell embeddings?'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb, all_cell_type, all_batch_id = [], [], []
@@ -719,7 +719,7 @@ def _cell_type_probing(ctx):
 def _reconstruction(ctx):
     '''Can gene expression be reconstructed from embeddings?'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
     recon_samples = min(ctx.config['test_total_examples'], 100)
     test_steps = recon_samples // ctx.config['batch_size']
     n_genes = ctx.config['num_genes']
@@ -789,7 +789,7 @@ def _reconstruction(ctx):
 def _perturbation_detection(ctx):
     '''Can we distinguish perturbed cells from control cells?'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     control_emb, case_emb = [], []
@@ -835,7 +835,7 @@ def _perturbation_detection(ctx):
 def _embedding_consistency(ctx):
     '''Do replicates of the same perturbation cluster together?'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb, all_pert = [], []
@@ -891,7 +891,7 @@ def _embedding_consistency(ctx):
 def _latent_space_health(ctx):
     '''Diagnostic metrics for embedding quality.'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
     test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
 
     all_emb = []
@@ -1769,7 +1769,7 @@ def _multi_pert_alignment(ctx):
     target_bank = ctx.target_bank
 
     try:
-        test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split='test', data_dir=ctx.paths['train_dir'], device=ctx.device)
+        test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
     except RuntimeError as e:
         return {'error': f'Could not load test shards: {e}. Run data_prep_03_shards.ipynb first.'}
 
