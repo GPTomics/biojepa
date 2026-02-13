@@ -383,7 +383,7 @@ class CellStateEncoder(nn.Module):
         )
 
         # learnable mask token, different than 0 expression
-        self.mask_token = nn.Parameter(torch.randn(1, 1, config.embed_dim) * 0.02)
+        self.mask_token = nn.Parameter(torch.randn(config.embed_dim) * 0.02)
         
         # Total Count Injector
         self.total_count_proj = nn.Linear(1, config.embed_dim)
@@ -514,7 +514,7 @@ class BioJepaConfig:
     pert_mode_dim: int = 64
 
     # EMA
-    ema_momentum: float = 0.996
+    ema_momentum: float = 0.995
     
 class BioJepa(nn.Module):
     def __init__(self, config):

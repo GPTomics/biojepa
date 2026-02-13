@@ -161,7 +161,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
 
-        if step % 100 == 0 or last_step:
+        if step % 500 == 0 or last_step:
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
@@ -196,7 +196,7 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
         loss_history.append(loss.item())
         total_epoch_loss += loss.item()
 
-        if step % 25 == 0:
+        if step % 100 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
 
         if step > 0 and (step + 1) % steps_per_epoch == 0:
@@ -371,7 +371,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
 
-        if step % 100 == 0 or last_step:
+        if step % 500 == 0 or last_step:
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
@@ -418,7 +418,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         loss_history.append(loss.item())
         total_epoch_loss += loss.item()
 
-        if step % 25 == 0:
+        if step % 100 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
 
         if step > 0 and (step + 1) % steps_per_epoch == 0:
@@ -473,7 +473,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
 
-        if step % 100 == 0 or last_step:
+        if step % 500 == 0 or last_step:
             decoder.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
@@ -523,7 +523,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
 
         loss_history.append(loss.item())
 
-        if step % 25 == 0:
+        if step % 100 == 0:
             print(f'Decoder Step {step} | Loss: {loss.item():.5f}')
 
         if last_step:
