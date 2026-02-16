@@ -16,6 +16,17 @@ AlignmentBatch = namedtuple('AlignmentBatch', ['seq_idx', 'target_idx', 'modalit
 
 PretrainBatch = namedtuple('PretrainBatch', ['x', 'total'])
 
+
+def _parse_dataset_name(shard_path, split):
+    parts = shard_path.stem.split('_')
+    if split not in parts:
+        return None
+    split_idx = parts.index(split)
+    if split_idx < 2:
+        return None
+    return '_'.join(parts[1:split_idx])
+
+
 class _BaseShardLoader:
     def __init__(self, batch_size, split, data_dir, device, total_samples=None, min_dataset_fraction=0.1):
         self.batch_size = batch_size
@@ -183,10 +194,24 @@ class AlignmentLoader(_BaseShardLoader):
 
 class TrainingLoader(_BaseShardLoader):
     def __init__(self, batch_size, split, data_dir, device, total_samples=None):
+        self._dataset_offsets = None
         super().__init__(batch_size, split, data_dir, device, total_samples)
 
+    def _build_dataset_offsets(self):
+        names = set()
+        for shard in self.shards:
+            name = _parse_dataset_name(shard, self.split)
+            if name:
+                names.add(name)
+        name_to_offset = {name: i * 10000 for i, name in enumerate(sorted(names))}
+        self._dataset_offsets = {}
+        for shard in self.shards:
+            name = _parse_dataset_name(shard, self.split)
+            self._dataset_offsets[shard] = name_to_offset.get(name, 0)
+
     def load_file(self, filename):
-        #print(f'loading {filename}')
+        if self._dataset_offsets is None:
+            self._build_dataset_offsets()
         with np.load(filename) as data:
             control_x = data['control'].astype(np.float32)
             control_tot = data['control_total'].astype(np.float32)
@@ -204,6 +229,8 @@ class TrainingLoader(_BaseShardLoader):
 
             batch_id = data['batch_id'].astype(np.int64) if 'batch_id' in data else np.zeros(len(control_x), dtype=np.int64)
             cell_type = data['cell_type'].astype(np.int64) if 'cell_type' in data else np.zeros(len(control_x), dtype=np.int64)
+
+        batch_id = batch_id + self._dataset_offsets.get(filename, 0)
 
         return (control_x, control_tot, case_x, case_tot, seq_idx, target_idx,
                 modality, mode, has_seq, has_target, n_perts, dose, batch_id, cell_type)
