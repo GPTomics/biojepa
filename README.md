@@ -39,31 +39,60 @@ Beyond therapeutics, the model's learned representations enable biological disco
 
 ## Current Performance
 
-| Metric | v0.5 | v0.4 | v0.3 | v0.2 | Context |
-| - | - | - | - | - | - |
-| **Global MSE** | **0.489** | 0.498 | 0.515 | 0.790 | Lower is better |
-| **Pearson R (Top 20)** | 0.919 | **0.927** | 0.921 | 0.605 | On genes that change most |
-| **R² All (mean/median)** | 0.930 / 0.940 | 0.918 / 0.927 | 0.902 / 0.910 | **0.942 / 0.956** | Inflated metric (most genes don't change) |
-| **R² Top 50 (mean/median)** | 0.066 / **0.341** | **0.096** / 0.325 | 0.060 / 0.255 | -0.027 / 0.269 | The hard test - no published SOTA |
-| Severity Correlation | 0.835 | **0.870** | — | — | Predicting effect magnitude |
-| Direction Accuracy (All) | **89.7%** | 87.7% | — | — | UP/DOWN/UNCHANGED classification |
-| Direction Accuracy (Top 50) | 28.5% | **34.0%** | — | — | Harder - on genes that change |
-| DEG Precision@20 | **4.8%** | 3.1% | — | — | Random baseline ~0.4% |
-| DEG vs Random | **12.0x** | 7.8x | — | — | Improvement over chance |
-| Retrieval MRR | 0.007 | **0.010** | — | — | ~1250 perturbations to rank |
-| Retrieval Recall@10 | **3.0%** | 2.0% | — | — | Random = 0.8% |
-| Uncertainty ECE | 0.281 | **0.135** | — | — | Lower is better |
-| Uncertainty Monotonicity | 0.56 | **0.78** | — | — | Higher is better |
-| Batch Invariance Ratio | 0.167 | **0.215** | — | — | Higher = more bio vs technical |
-| Pathway Gene k-NN | **30.7%** | 27.4% | — | — | Pathway structure in gene embeddings |
-| Pathway Action k-NN | **41.0%** | 37.9% | — | — | Pathway structure in action vectors |
-| MOA Similarity Ratio | 1.005 | **1.006** | — | — | >1 = same-pathway more similar |
-| Essential AUROC | **0.741** | 0.707 | — | — | Predicting gene essentiality |
-| Essential Pearson | **0.408** | 0.275 | — | — | Correlation with DepMap scores |
+### Pretraining Evals (encoder quality)
 
-Extended evals (rows without bold) available for v0.4+.
+v0.6 trains on 6 datasets (10K genes) vs v0.5 single dataset (5K genes). Metrics not directly comparable due to task difficulty differences.
 
-**Notes:** R² on all genes will always look good because ~95% of genes barely change. The real test is R² on Top 50 DEGs. Most published SOTA uses Pearson on all genes (easy metric). Retrieval metrics are against ~1250 perturbations. For detailed metric interpretation, see `docs/eval_planning.md`.
+| Metric | v0.6 | v0.5 | v0.4 | Context |
+| - | - | - | - | - |
+| Batch Invariance Ratio | **1.273** | 0.167 | 0.215 | Higher = more bio vs technical signal |
+| Perturbation Detection AUROC | **0.579** | — | — | Control vs perturbed classification |
+| Reconstruction Pearson | **0.983** | — | — | Gene expression from embeddings |
+| Cell Type Accuracy | **99.7%** | — | — | 2 cell types in test data |
+| Embedding Consistency | **0.852** | — | — | Same-pert similarity ratio |
+| Essential Gene AUROC | 0.629 | **0.741** | 0.707 | v0.5 had K562-only home-field advantage |
+| KEGG Silhouette | **-0.072** | -0.083 | — | Pathway structure in gene embeddings |
+| Effective Dimensionality (90%) | **42** | — | — | Of 256 total dims |
+
+### Alignment Evals (composer quality)
+
+New in v0.6. Evaluates dual-pathway ActionComposer (sequence + target fusion).
+
+| Metric | v0.6 | Context |
+| - | - | - |
+| Mode Sensitivity Accuracy | **92.6%** | 7 modes, chance = 14.3% (6.5x) |
+| Paired Cosine Similarity (DNA) | 0.776 | Seq-target alignment quality |
+| Seq-to-Target Retrieval MRR | 0.0015 | Target: >0.6. Alignment weak |
+| Cross-Modality Consistency | 1.030 | Target: >>1. Barely above random |
+| Fused-to-Seq Cosine | 0.998 | Fusion dominated by seq pathway |
+| Target Family Probing (target) | 17.0% (48x) | Raw ESM-2 embeddings carry signal |
+| Target Family Probing (fused) | 9.0% (25x) | Fusion doesn't leverage target info |
+
+### Full Model Evals (expression prediction)
+
+v0.6: 1,073 test perturbations, 10K genes, 6 datasets. v0.5: 286 test perturbations, 5K genes, 1 dataset.
+
+| Metric | v0.6 | v0.5 | v0.4 | v0.3 | v0.2 | Context |
+| - | - | - | - | - | - | - |
+| **R² Top 50 DEGs (mean)** | **0.442** | 0.066 | 0.096 | 0.060 | -0.027 | The hard test |
+| **R² Top 50 DEGs (median)** | **0.513** | 0.341 | 0.325 | 0.255 | 0.269 | The hard test |
+| **Severity Spearman** | **0.927** | 0.471 | — | — | — | Predicting effect magnitude |
+| Severity Pearson | **0.969** | 0.835 | 0.870 | — | — | Predicting effect magnitude |
+| Global MSE | **0.227** | 0.489 | 0.498 | 0.515 | 0.790 | Lower is better |
+| Pearson R (Top 20) | 0.872 | **0.919** | 0.927 | 0.921 | 0.605 | Harder task (more perts/genes) |
+| R² All Genes (mean/median) | **0.932 / 0.945** | 0.930 / 0.940 | 0.918 / 0.927 | 0.902 / 0.910 | 0.942 / 0.956 | Inflated (most genes don't change) |
+| Direction Accuracy (All) | **93.4%** | 89.7% | 87.7% | — | — | UP/DOWN/UNCHANGED |
+| Direction Accuracy (Top 50) | 29.1% | 28.5% | **34.0%** | — | — | On genes that change most |
+| DEG Precision@20 | **5.7%** | 4.8% | 3.1% | — | — | Random baseline ~0.2% |
+| DEG vs Random @20 | **28.5x** | 12.0x | 7.8x | — | — | Improvement over chance |
+| MOA Similarity Ratio | **1.089** | 1.005 | 1.006 | — | — | >1 = same-pathway more similar |
+| MOA p-value | **5.4e-24** | 0.267 | — | — | — | Statistical significance |
+| Retrieval MRR (DNA) | 0.0004 | **0.007** | 0.010 | — | — | Bank: 11.6K vs 1.25K |
+| Retrieval MRR (Chemical) | **0.035** | — | — | — | — | New capability (188 compounds) |
+| Uncertainty ECE | 0.520 | **0.281** | 0.135 | — | — | Lower is better. v0.6 anti-calibrated |
+| Action Vector Silhouette | **-0.339** | -0.412 | — | — | — | Pathway structure in action vectors |
+
+**Notes:** R² on all genes will always look good because ~95% of genes barely change. The real test is R² on Top 50 DEGs. Most published SOTA uses Pearson on all genes (easy metric). For detailed metric interpretation, see `docs/eval_planning.md`.
 
 ### SOTA Context
 
