@@ -20,13 +20,18 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 **Expression Prediction SOTA (Pearson, all genes):**
 | Dataset | Model | Pearson | Notes |
 |---------|-------|---------|-------|
-| Adamson K562 | scLAMBDA | 0.786 | Current SOTA |
 | Adamson K562 | GenePert | 0.79 | GPT-4 embeddings |
+| Adamson K562 | scLAMBDA | 0.786 | Deep generative |
 | Adamson K562 | GEARS | 0.692 | Graph + GO |
+| Replogle K562 | **XPert** | **0.720** | Dual-branch transformer (2025 SOTA) |
+| Replogle K562 | scLAMBDA | 0.564 | Deep generative |
+| Replogle K562 | RF + GO | 0.480 | Simple ML |
 | Replogle K562 | Train Mean | 0.373 | Simple baseline beats DL |
 | Replogle K562 | scGPT | 0.327 | Underperforms baseline |
 
-**Primary Comparable Model:** [LPM (Nature Computational Science, 2025)](https://www.nature.com/articles/s43588-025-00870-1) - first to unify genetic + chemical perturbations.
+**Primary Comparable Models:**
+- [LPM (Nature Computational Science, 2025)](https://www.nature.com/articles/s43588-025-00870-1) - first to unify genetic + chemical perturbations
+- [XPert (Nature Machine Intelligence, 2025)](https://www.nature.com/articles/s42256-025-01165-w) - dual-branch transformer, SOTA on Replogle K562
 
 **Models NOT Comparable to BioJEPA** (different tasks):
 - Protein fitness: AIDO, VenusREM, VespaG (ProteinGym benchmark)
@@ -70,7 +75,7 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 
 **Biological question**: Can we predict the gene expression profile after a perturbation? Can we predict how severe the perturbation's effect will be?
 
-**SOTA context**: Published SOTA ranges 0.69-0.79 Pearson on Adamson K562 (all genes). On Replogle K562, simple train-mean baseline (0.373) beats scGPT (0.327). Our harder metric (R² on top 50 DEGs) has no published SOTA - most papers avoid it.
+**SOTA context**: Published SOTA ranges 0.69-0.79 Pearson on Adamson K562 (all genes). XPert achieves 0.720 on Replogle K562 (Nature Machine Intelligence 2025). Simple train-mean baseline (0.373) beats scGPT (0.327) on Replogle. Our harder metric (R² on top 50 DEGs) has no published SOTA - most papers avoid it. scLAMBDA reports ~0.8 Pearson on top-20 DEGs for Adamson and 0.682 for Replogle -- closest comparison to our hard metric.
 
 **Metrics**:
 
