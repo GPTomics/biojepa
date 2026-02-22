@@ -1,17 +1,4 @@
-'''BioJEPA v0.6 Evaluation Suite
-
-Three entry points:
-- run_pretraining_evals(ctx): batch_invariance, gene_embedding_pathways, essential_gene_prediction,
-                              cell_type_probing, reconstruction, perturbation_detection,
-                              embedding_consistency, latent_space_health
-- run_full_model_evals(ctx): expression_prediction, gene_level_analysis, perturbation_retrieval,
-                             uncertainty_calibration, action_vector_pathways, moa_matching,
-                             combination_perturbation, dose_response
-- run_alignment_evals(ctx): seq_to_target_retrieval, cross_modality_target_consistency,
-                            seq_target_gap_analysis, paired_alignment_quality, mode_sensitivity,
-                            fusion_quality, missing_data_robustness, multi_pert_alignment,
-                            target_family_probing, cross_modality_alignment
-'''
+'''BioJEPA evaluation utilities and suite entry points.'''
 
 import json
 import pickle
@@ -156,6 +143,9 @@ class EvalContext:
         self._id_to_gene = None
         self._seq_banks = None
         self._target_bank = None
+        self._norman_single_gene_deltas = None
+        self._norman_combo_mapping = None
+        self._norman_gi_subtypes = None
 
     @classmethod
     def from_trained_model(cls, biojepa_model, data_root, ref_dir, config, decoder=None):
@@ -372,6 +362,43 @@ class EvalContext:
         return self._id_to_gene
 
     @property
+    def norman_single_gene_deltas(self):
+        if self._norman_single_gene_deltas is None:
+            path = self.paths['data_dir'] / 'norman_single_gene_deltas.npz'
+            if path.exists():
+                data = np.load(path)
+                self._norman_single_gene_deltas = {
+                    'gene_names': list(data['gene_names']),
+                    'deltas': data['deltas'],
+                    'mean_control': data['mean_control'],
+                }
+                if self.config['verbose']:
+                    print(f'Loaded Norman single-gene deltas: {len(self._norman_single_gene_deltas["gene_names"])} genes')
+        return self._norman_single_gene_deltas
+
+    @property
+    def norman_combo_mapping(self):
+        if self._norman_combo_mapping is None:
+            path = self.paths['data_dir'] / 'norman_combo_mapping.json'
+            if path.exists():
+                with open(path) as f:
+                    self._norman_combo_mapping = json.load(f)
+                if self.config['verbose']:
+                    print(f'Loaded Norman combo mapping: {len(self._norman_combo_mapping)} combos')
+        return self._norman_combo_mapping
+
+    @property
+    def norman_gi_subtypes(self):
+        if self._norman_gi_subtypes is None:
+            path = self.paths['ref_dir'] / 'norman' / 'norman_gi_subtypes.json'
+            if path.exists():
+                with open(path) as f:
+                    self._norman_gi_subtypes = json.load(f)
+                if self.config['verbose']:
+                    print(f'Loaded Norman GI subtypes: {len(self._norman_gi_subtypes)} combos')
+        return self._norman_gi_subtypes
+
+    @property
     def test_inference(self):
         if self._test_inference is None:
             if not self._load_inference_cache():
@@ -579,7 +606,8 @@ def save_report(results, output_path='eval_report.json'):
     if report_path.exists():
         report = json.loads(report_path.read_text())
     else:
-        report = {'version': 'v0.6', 'evals': {}}
+        report = {'evals': {}}
+    report.pop('version', None)
 
     run_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
     report['last_updated'] = run_timestamp
@@ -647,7 +675,7 @@ def run_full_model_evals(ctx):
 
 
 def run_alignment_evals(ctx):
-    '''Run alignment stage evaluations (10 evals for v0.6 dual-path architecture).'''
+    '''Run alignment stage evaluations.'''
     return {
         'seq_to_target_retrieval': _seq_to_target_retrieval(ctx),
         'cross_modality_target_consistency': _cross_modality_target_consistency(ctx),
@@ -736,14 +764,53 @@ def _batch_invariance(ctx):
         print(f'batch_invariance: Batch={ba:.4f} ({ba/result["batch_classifier"]["chance"]:.1f}x), Pert={pa:.4f} ({pa/result["perturbation_classifier"]["chance"]:.1f}x)')
 
     by_dataset = {}
+    excluded_datasets = {}
     for ds_id, ds_name in test_loader.dataset_id_to_name.items():
         mask = dataset_ids == ds_id
-        if mask.sum() < 200:
+        sample_count = int(mask.sum())
+        if sample_count < 200:
+            excluded_datasets[ds_name] = {'samples': sample_count, 'reason': 'fewer than 200 samples'}
             continue
         ds_result = _compute_batch_invariance(embeddings[mask], batch_ids[mask], pert_ids[mask], ctx.device, eval_seed)
         if ds_result is not None:
             by_dataset[ds_name] = ds_result
     result['by_dataset'] = by_dataset
+    result['scope'] = 'cross_dataset_aggregate'
+    result['interpretation_note'] = (
+        'Global metrics are aggregated across datasets and may include dataset-composition effects. '
+        'Use by_dataset and within_dataset_summary for cleaner within-dataset interpretation.'
+    )
+    result['excluded_datasets'] = excluded_datasets
+
+    if by_dataset:
+        ratios = np.array([v['invariance_ratio'] for v in by_dataset.values()], dtype=np.float64)
+        batch_accs = np.array([v['batch_classifier']['accuracy'] for v in by_dataset.values()], dtype=np.float64)
+        pert_accs = np.array([v['perturbation_classifier']['accuracy'] for v in by_dataset.values()], dtype=np.float64)
+        weights = np.array([v['config']['samples'] for v in by_dataset.values()], dtype=np.float64)
+        weight_sum = float(weights.sum())
+        result['within_dataset_summary'] = {
+            'n_datasets_included': int(len(by_dataset)),
+            'macro_mean': {
+                'invariance_ratio': float(ratios.mean()),
+                'batch_accuracy': float(batch_accs.mean()),
+                'perturbation_accuracy': float(pert_accs.mean()),
+            },
+            'weighted_mean': {
+                'invariance_ratio': float(np.dot(ratios, weights) / weight_sum) if weight_sum > 0 else 0.0,
+                'batch_accuracy': float(np.dot(batch_accs, weights) / weight_sum) if weight_sum > 0 else 0.0,
+                'perturbation_accuracy': float(np.dot(pert_accs, weights) / weight_sum) if weight_sum > 0 else 0.0,
+            },
+        }
+        if verbose:
+            g_ratio = result['invariance_ratio']
+            m_ratio = result['within_dataset_summary']['macro_mean']['invariance_ratio']
+            print(f'batch_invariance summary: global_ratio={g_ratio:.3f}, within_dataset_macro_ratio={m_ratio:.3f}')
+    else:
+        result['within_dataset_summary'] = {
+            'n_datasets_included': 0,
+            'macro_mean': {'invariance_ratio': 0.0, 'batch_accuracy': 0.0, 'perturbation_accuracy': 0.0},
+            'weighted_mean': {'invariance_ratio': 0.0, 'batch_accuracy': 0.0, 'perturbation_accuracy': 0.0},
+        }
     return result
 
 
@@ -813,8 +880,10 @@ def _essential_gene_prediction(ctx):
     with torch.no_grad():
         y_pred_test = probe(torch.from_numpy(X_test).float().to(ctx.device)).cpu().numpy()
 
-    pearson_test, _ = pearsonr(y_test, y_pred_test)
-    spearman_test, _ = spearmanr(y_test, y_pred_test)
+    r, _ = pearsonr(y_test, y_pred_test)
+    pearson_test = 0.0 if np.isnan(r) else float(r)
+    r, _ = spearmanr(y_test, y_pred_test)
+    spearman_test = 0.0 if np.isnan(r) else float(r)
 
     THRESH = -0.5
     y_test_bin = (y_test < THRESH).astype(int)
@@ -947,14 +1016,15 @@ def _reconstruction(ctx):
         y_true = y_test[test_subset]
 
     mse = np.mean((y_pred - y_true)**2)
-    pearson_r, _ = pearsonr(y_pred, y_true)
+    r, _ = pearsonr(y_pred, y_true)
+    pearson_r = 0.0 if np.isnan(r) else float(r)
 
     if verbose:
         print(f'reconstruction: MSE={mse:.4f}, Pearson R={pearson_r:.4f}')
 
     return {
         'config': {'samples': n_samples, 'train_genes': len(train_genes), 'test_genes': len(test_genes), 'embedding_dim': int(embeddings.shape[-1])},
-        'metrics': {'reconstruction_mse': float(mse), 'pearson_r': float(pearson_r), 'pearson_r_squared': float(pearson_r**2)}
+        'metrics': {'reconstruction_mse': float(mse), 'pearson_r': pearson_r, 'pearson_r_squared': pearson_r**2}
     }
 
 
@@ -1217,8 +1287,10 @@ def _compute_expression_prediction(inf, n_genes):
 
     pred_severity = np.array([np.linalg.norm(mean_pred_deltas[k]) for k in pert_keys])
     real_severity = np.array([np.linalg.norm(mean_real_deltas[k]) for k in pert_keys])
-    severity_pearson, _ = pearsonr(pred_severity, real_severity)
-    severity_spearman, _ = spearmanr(pred_severity, real_severity)
+    r, _ = pearsonr(pred_severity, real_severity)
+    severity_pearson = 0.0 if np.isnan(r) else float(r)
+    r, _ = spearmanr(pred_severity, real_severity)
+    severity_spearman = 0.0 if np.isnan(r) else float(r)
 
     all_pred = np.concatenate([mean_pred_deltas[k] for k in pert_keys])
     all_real = np.concatenate([mean_real_deltas[k] for k in pert_keys])
@@ -1516,8 +1588,10 @@ def _compute_uncertainty_calibration(inf, n_bins):
     sample_mse = np.mean((pred_deltas - real_deltas)**2, axis=1)
     sample_unc = sample_logvars.mean(axis=1)
 
-    pearson_r, _ = pearsonr(sample_unc, sample_mse)
-    spearman_r, _ = spearmanr(sample_unc, sample_mse)
+    r, _ = pearsonr(sample_unc, sample_mse)
+    pearson_r = 0.0 if np.isnan(r) else float(r)
+    r, _ = spearmanr(sample_unc, sample_mse)
+    spearman_r = 0.0 if np.isnan(r) else float(r)
 
     bin_edges = np.percentile(sample_unc, np.linspace(0, 100, n_bins + 1))
     bin_mean_error = []
@@ -1556,8 +1630,10 @@ def _compute_uncertainty_calibration(inf, n_bins):
 
     pert_unc_arr = np.array([np.mean(sample_unc[pert_groups[p]]) for p in pert_groups])
     pert_err_arr = np.array([np.mean(sample_mse[pert_groups[p]]) for p in pert_groups])
-    pert_pearson, _ = pearsonr(pert_unc_arr, pert_err_arr)
-    pert_spearman, _ = spearmanr(pert_unc_arr, pert_err_arr)
+    r, _ = pearsonr(pert_unc_arr, pert_err_arr)
+    pert_pearson = 0.0 if np.isnan(r) else float(r)
+    r, _ = spearmanr(pert_unc_arr, pert_err_arr)
+    pert_spearman = 0.0 if np.isnan(r) else float(r)
 
     # Variance prediction R²
     variance_r2s = []
@@ -1729,6 +1805,68 @@ def _moa_matching(ctx):
     }
 
 
+def _compute_additive_baseline(combo_inf, single_deltas, single_gene_names, combo_to_genes, n_genes):
+    gene_name_to_idx = {g: i for i, g in enumerate(single_gene_names)}
+    model_mses, additive_mses, model_pearsons, additive_pearsons = [], [], [], []
+    nonadd_model_mses, nonadd_pearsons = [], []
+    per_key_results = {}
+
+    for key in combo_inf['pert_keys']:
+        genes = combo_to_genes.get(key)
+        if genes is None or genes[0] is None or genes[1] is None:
+            continue
+        idx_a, idx_b = gene_name_to_idx.get(genes[0]), gene_name_to_idx.get(genes[1])
+        if idx_a is None or idx_b is None:
+            continue
+
+        real_delta = combo_inf['mean_real_deltas'][key][:n_genes]
+        pred_delta = combo_inf['mean_pred_deltas'][key][:n_genes]
+        additive_delta = single_deltas[idx_a, :n_genes] + single_deltas[idx_b, :n_genes]
+
+        model_mse = float(np.mean((pred_delta - real_delta) ** 2))
+        additive_mse = float(np.mean((additive_delta - real_delta) ** 2))
+        model_mses.append(model_mse)
+        additive_mses.append(additive_mse)
+
+        if np.std(real_delta) > 1e-9 and np.std(pred_delta) > 1e-9:
+            r = pearsonr(pred_delta, real_delta)[0]
+            model_pearsons.append(0.0 if np.isnan(r) else float(r))
+        if np.std(real_delta) > 1e-9 and np.std(additive_delta) > 1e-9:
+            r = pearsonr(additive_delta, real_delta)[0]
+            additive_pearsons.append(0.0 if np.isnan(r) else float(r))
+
+        nonadd_deviation = np.abs(real_delta - additive_delta)
+        top20_idx = np.argsort(nonadd_deviation)[-20:]
+        nonadd_model_mses.append(float(np.mean((pred_delta[top20_idx] - real_delta[top20_idx]) ** 2)))
+        real_sub, pred_sub = real_delta[top20_idx], pred_delta[top20_idx]
+        if np.std(real_sub) > 1e-9 and np.std(pred_sub) > 1e-9:
+            r = pearsonr(pred_sub, real_sub)[0]
+            nonadd_pearsons.append(0.0 if np.isnan(r) else float(r))
+
+        per_key_results[key] = {'genes': genes, 'model_mse': model_mse, 'additive_mse': additive_mse, 'additive_delta': additive_delta}
+
+    if len(model_mses) == 0:
+        skip = {'skipped': True, 'reason': 'no combos with both singles available'}
+        return skip, skip, per_key_results
+
+    additive_result = {
+        'config': {'n_evaluated': len(model_mses), 'n_genes': n_genes},
+        'model_mse': float(np.mean(model_mses)),
+        'additive_mse': float(np.mean(additive_mses)),
+        'model_pearson': float(np.mean(model_pearsons)) if model_pearsons else None,
+        'additive_pearson': float(np.mean(additive_pearsons)) if additive_pearsons else None,
+        'model_beats_additive_rate': float(np.mean([m < a for m, a in zip(model_mses, additive_mses)])),
+    }
+
+    nonadd_result = {
+        'config': {'n_evaluated': len(nonadd_model_mses), 'n_genes_per_pert': 20},
+        'mse': float(np.mean(nonadd_model_mses)),
+        'pearson': float(np.mean(nonadd_pearsons)) if nonadd_pearsons else None,
+    }
+
+    return additive_result, nonadd_result, per_key_results
+
+
 def _combination_perturbation(ctx):
     '''Evaluate model performance on multi-perturbation samples (up to 4 perts, any mix of DNA/chemical).'''
     inf = ctx.test_inference
@@ -1769,13 +1907,70 @@ def _combination_perturbation(ctx):
     composition['modality_mix'] = dict(composition['modality_mix'])
 
     expr_pred = _compute_expression_prediction(combo_inf, n_genes)
-    print(f'combination_perturbation: {len(combo_keys)} combo perts, {int(combo_sample_mask.sum())} samples')
+
+    combo_mapping = ctx.norman_combo_mapping
+    single_deltas_data = ctx.norman_single_gene_deltas
+    skip_reason = {'skipped': True, 'reason': 'norman_combo_mapping.json or norman_single_gene_deltas.npz not found'}
+    if combo_mapping is None or single_deltas_data is None:
+        additive_result, nonadd_result, per_key_results = skip_reason, skip_reason, {}
+    else:
+        combo_to_genes = {}
+        for key in combo_inf['pert_keys']:
+            genes = combo_mapping.get(str(key[0]))
+            combo_to_genes[key] = tuple(genes) if genes else None
+        additive_result, nonadd_result, per_key_results = _compute_additive_baseline(
+            combo_inf, single_deltas_data['deltas'], single_deltas_data['gene_names'], combo_to_genes, n_genes
+        )
+
+    gi_subtypes = ctx.norman_gi_subtypes
+    if gi_subtypes is None or not per_key_results:
+        gi_result = {'skipped': True, 'reason': 'norman_gi_subtypes.json not found or no additive baseline data'}
+    else:
+        name_to_subtype = {}
+        for combo_name, subtype in gi_subtypes.items():
+            name_to_subtype[combo_name] = subtype
+            parts = combo_name.split('_')
+            if len(parts) == 2:
+                name_to_subtype[f'{parts[1]}_{parts[0]}'] = subtype
+
+        by_subtype = defaultdict(lambda: {'model_mses': [], 'additive_mses': [], 'interaction_pearsons': []})
+        for key, kres in per_key_results.items():
+            combo_name = f'{kres["genes"][0]}_{kres["genes"][1]}'
+            subtype = name_to_subtype.get(combo_name)
+            if subtype is None:
+                continue
+            by_subtype[subtype]['model_mses'].append(kres['model_mse'])
+            by_subtype[subtype]['additive_mses'].append(kres['additive_mse'])
+            real_delta = combo_inf['mean_real_deltas'][key][:n_genes]
+            pred_delta = combo_inf['mean_pred_deltas'][key][:n_genes]
+            interaction_real = real_delta - kres['additive_delta']
+            interaction_pred = pred_delta - kres['additive_delta']
+            if np.std(interaction_real) > 1e-9 and np.std(interaction_pred) > 1e-9:
+                r = pearsonr(interaction_pred, interaction_real)[0]
+                by_subtype[subtype]['interaction_pearsons'].append(0.0 if np.isnan(r) else float(r))
+
+        gi_result = {'config': {'n_subtypes': len(by_subtype)}, 'by_subtype': {}}
+        for subtype, vals in sorted(by_subtype.items()):
+            gi_result['by_subtype'][subtype] = {
+                'n_combos': len(vals['model_mses']),
+                'model_mse': float(np.mean(vals['model_mses'])),
+                'additive_mse': float(np.mean(vals['additive_mses'])),
+                'interaction_pearson': float(np.mean(vals['interaction_pearsons'])) if vals['interaction_pearsons'] else None,
+            }
+
+    n_additive = additive_result.get('config', {}).get('n_evaluated', 0) if not additive_result.get('skipped') else 0
+    n_gi = sum(v['n_combos'] for v in gi_result.get('by_subtype', {}).values())
+    print(f'combination_perturbation: {len(combo_keys)} combo perts, {int(combo_sample_mask.sum())} samples, '
+          f'{n_additive} additive baseline, {n_gi} GI-labeled')
 
     return {
         'expression_prediction': expr_pred,
         'n_combo_perturbations': len(combo_keys),
         'n_combo_samples': int(combo_sample_mask.sum()),
         'composition': composition,
+        'additive_baseline': additive_result,
+        'non_additive_gene_mse': nonadd_result,
+        'gi_subtype': gi_result,
     }
 
 
@@ -1832,7 +2027,8 @@ def _dose_response(ctx):
     if total_pairs == 0:
         return {'skipped': True, 'reason': 'no drugs with multiple dose levels'}
 
-    dose_severity_spearman, _ = spearmanr(all_doses_flat, all_severities_flat)
+    r, _ = spearmanr(all_doses_flat, all_severities_flat)
+    dose_severity_spearman = 0.0 if np.isnan(r) else float(r)
 
     print(f'dose_response: monotonicity={monotonic_count/total_pairs:.2%}, spearman={dose_severity_spearman:.4f}')
 

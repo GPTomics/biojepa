@@ -57,6 +57,7 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 - `missing_data_robustness`: Graceful degradation with missing seq or target
 - `multi_pert_alignment`: Alignment quality for multi-perturbation samples
 - `target_family_probing`: Do embeddings (seq-only, target-only, fused) encode protein family?
+- `cross_modality_alignment`: Do DNA and chemical sequences targeting same protein align in action space?
 
 **Full Model Evals** (run after stage 3 - full training):
 - `expression_prediction`: Can we predict gene expression after perturbation?
@@ -65,6 +66,8 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 - `uncertainty_calibration`: Are confidence estimates meaningful?
 - `action_vector_pathways`: Do same-pathway perturbations have similar action vectors?
 - `moa_matching`: Do same-pathway perturbations produce similar predicted effects?
+- `combination_perturbation`: Multi-pert prediction quality + additive baseline comparison + GI subtype breakdown
+- `dose_response`: Dose-dependent severity scaling for chemical perturbations
 
 ---
 
@@ -864,11 +867,9 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 
 ## Future Evaluations
 
-These evaluations require additional data or architectural changes and are not currently prioritized.
-
 ### SOTA Comparison Evals
 
-The following evals would enable direct comparison to published SOTA numbers.
+The following evals would enable direct comparison to published SOTA numbers. Some are now implemented.
 
 #### gears_benchmark
 **Status**: Planned - requires GEARS protocol implementation
@@ -908,19 +909,19 @@ The following evals would enable direct comparison to published SOTA numbers.
 ---
 
 #### dose_response
-**Status**: Planned - requires dose-aware evaluation
+**Status**: Implemented in `_dose_response`
 
 **Biological question**: Can BioJEPA predict dose-dependent effects?
 
 **Setup**:
-- SciPlex has dose information for chemical perturbations
-- Test if predictions scale appropriately with dose
-- Correlate predicted severity with dose level
+- Uses SciPlex dose annotations from test inference
+- Groups samples by (perturbation, dose) and computes severity (L2 norm of predicted delta) per dose level
+- Tests monotonic severity scaling: does higher dose -> greater predicted effect?
 
-**What's needed**:
-- SciPlex dose annotations (already in v0.6)
-- Dose-aware evaluation metrics (severity vs dose correlation)
-- Compare to CPA which explicitly models dose
+**Metrics**:
+- `severity_dose_spearman`: Rank correlation between dose and predicted severity (per drug, averaged)
+- `monotonic_fraction`: Fraction of drugs where severity increases monotonically with dose
+- `n_drugs_evaluated`: Number of drugs with 3+ dose levels
 
 **Story**: Dose-response is critical for drug development. If BioJEPA captures this without explicit dose modeling, it suggests the action space encodes mechanistic information.
 
@@ -946,19 +947,22 @@ The following evals would enable direct comparison to published SOTA numbers.
 ---
 
 #### combination_perturbation
-**Status**: Planned - requires Norman dual-gene data
+**Status**: Implemented in `_combination_perturbation`
 
 **Biological question**: Can BioJEPA predict combinatorial perturbation effects better than single-pert models?
 
 **Setup**:
-- Use Norman dual-gene CRISPRa data (n_perts=2)
-- Compare BioJEPA (handles multi-pert natively) vs baseline (sum of single-pert predictions)
-- Measure: Does attention pooling capture non-additive effects?
+- Filters test inference to multi-pert samples (n_perts > 1), primarily Norman dual-gene CRISPRa
+- Reports expression prediction metrics on combo subset (same as `_compute_expression_prediction`)
+- Reports composition breakdown (by n_perts and modality mix)
 
-**What's needed**:
-- Norman dual-gene samples in test set
-- Baseline: predict each gene separately, sum deltas
-- BioJEPA: use full multi-pert pipeline with attention pooling
+**Sub-evals** (all folded into the same function):
+
+**additive_baseline**: For each combo (A+B), computes additive_delta = delta_A + delta_B from single-gene reference data. Compares model MSE vs additive MSE, model Pearson vs additive Pearson. Reports `model_beats_additive_rate` (fraction where model < additive MSE). Requires `norman_single_gene_deltas.npz` and `norman_combo_mapping.json` (produced by `data_prep_04`).
+
+**non_additive_gene_mse**: For the top 20 genes per combo that deviate most from additivity (|real_delta - additive_delta| largest), reports model MSE and Pearson. Tests whether the model captures the interaction-specific genes.
+
+**gi_subtype**: Loads GEARS genetic interaction labels (88 combos, 8 types: neomorphic, additive, epistasis, redundant, potentiation, synergy_similar_pheno, synergy_dissimilar_pheno, suppressor). Reports per-subtype: model_mse, additive_mse, interaction_pearson (correlation between predicted and real interaction effects = delta minus additive). Requires `norman_gi_subtypes.json` (in reference_data/norman/).
 
 **Story**: BioJEPA is the only model that natively handles multi-pert (up to 4). This unique capability should translate to better combination predictions. GEARS and scLAMBDA approximate combinations via graph edges, but BioJEPA processes them jointly.
 
@@ -992,32 +996,30 @@ The following evals would enable direct comparison to published SOTA numbers.
 - Get known synthetic lethal pairs from literature/databases (e.g., SynLethDB)
 - For each pair (A, B), predict effect of A alone, B alone, and approximate A+B
 - Measure: Do known SL pairs show predicted non-additive lethality?
-- This is exploratory - current model doesn't handle combinations
+- This is exploratory - BioJEPA natively handles multi-pert via attention pooling
 
 **What's needed**:
 - Synthetic lethality database (SynLethDB)
-- Method to approximate combination effects:
-  - Option 1: Add action vectors (hacky but tests for signal)
-  - Option 2: Modify ActionComposer to accept multiple perturbations (architectural change)
+- Feed known SL pairs through multi-pert pipeline (model already supports n_perts=2)
+- Compare predicted combo effect vs sum-of-singles
 
 **Story**: This tests whether the model's learned physics captures the non-linear interactions that underlie synthetic lethality. Even rough signal here would be exciting and validate the drug combination use case.
 
 ---
 
 ### cross_modality_retrieval
-**Status**: On Hold - requires chemical embeddings
+**Status**: On Hold - partially addressed by `cross_modality_alignment`
 
 **Biological question**: Given a drug embedding, can we retrieve the corresponding CRISPR knockout targeting the same pathway/mechanism?
 
 **Setup**:
-- Embed chemicals using MolBERT or ChemBERT
-- For each chemical perturbation, find nearest CRISPR knockouts in action space
-- Measure if compounds and knockouts targeting same genes/pathways are retrieved
+- ChemMRL embeddings already available in v0.6 (1536d, pre-padded)
+- `cross_modality_alignment` eval checks if DNA and chemical sequences targeting same protein align
+- Full retrieval benchmark would extend this to rank-based retrieval across modalities
 
 **What's needed**:
-- Chemical perturbation data with known targets
-- Chemical embeddings (MolBERT, ChemBERT, or similar)
-- Mapping between chemicals and their target genes/pathways
+- Extend beyond shared-target pairs to pathway-level retrieval
+- Full retrieval metrics (MRR, Recall@K) across DNA-chemical pairs
 
 **Story**: This would validate that the action space truly captures biological mechanism, not just modality-specific features. A drug inhibiting gene X should have a similar action vector to CRISPR knockout of gene X.
 
@@ -1050,14 +1052,15 @@ The following evals would enable direct comparison to published SOTA numbers.
 | missing_data_robustness | Alignment | evals.py | Graceful degradation | Recovery ratio |
 | multi_pert_alignment | Alignment | evals.py | Multi-pert alignment quality | Alignment drop |
 | target_family_probing | Alignment | evals.py | Protein family in action embeddings | Accuracy, F1 |
-| cross_cell_type_transfer | - | - | Cross-cell-type transfer | On Hold |
-| synthetic_lethality_signal | - | - | Synthetic lethality detection | On Hold |
-| cross_modality_retrieval | - | - | Chemical-CRISPR retrieval | On Hold (needs chemical embeddings) |
+| combination_perturbation | Full | evals.py | Multi-pert prediction + additive baseline + GI subtypes | Done |
+| dose_response | Full | evals.py | Dose-dependent severity scaling | Done |
+| cross_modality_alignment | Alignment | evals.py | DNA-chemical cross-modality alignment | Done |
 | gears_benchmark | Full | - | SOTA comparison on standard benchmark | Planned |
 | lpm_comparison | Full | - | Comparison to unified genetic+chemical model | Planned |
-| dose_response | Full | - | Dose-dependent effect prediction | Planned |
 | unseen_target_prediction | Full | - | Zero-shot to novel protein targets | Planned |
-| combination_perturbation | Full | - | Multi-pert advantage over single-pert baselines | Planned |
+| cross_cell_type_transfer | - | - | Cross-cell-type transfer | On Hold |
+| synthetic_lethality_signal | - | - | Synthetic lethality detection | On Hold |
+| cross_modality_retrieval | - | - | Chemical-CRISPR retrieval | On Hold |
 
 ---
 
@@ -1070,5 +1073,10 @@ The following evals would enable direct comparison to published SOTA numbers.
 | KEGG/Reactome pathways | gseapy | gene_embedding_pathways, action_vector_pathways, moa_matching | Done |
 | DepMap K562 CRISPR | DepMap API | essential_gene_prediction | Done |
 | Cell type labels | Add to shards | cell_type_probing | Done |
+| HGNC gene families | hgnc.tsv | target_family_probing | Done |
+| Norman single-gene deltas | data_prep_04 | combination_perturbation (additive_baseline, non_additive_gene_mse) | Done |
+| Norman combo mapping | data_prep_04 | combination_perturbation (additive_baseline) | Done |
+| Norman GI subtype labels | GEARS / Norman 2019 | combination_perturbation (gi_subtype) | Done |
+| SciPlex dose annotations | Already in v0.6 shards | dose_response | Done |
 | Replogle RPE1 | GEARS/GEO | cross_cell_type_transfer | Pending |
 | SynLethDB | Public database | synthetic_lethality_signal | Pending |
