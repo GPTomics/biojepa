@@ -5,14 +5,16 @@ Three entry points:
                               cell_type_probing, reconstruction, perturbation_detection,
                               embedding_consistency, latent_space_health
 - run_full_model_evals(ctx): expression_prediction, gene_level_analysis, perturbation_retrieval,
-                             uncertainty_calibration, action_vector_pathways, moa_matching
+                             uncertainty_calibration, action_vector_pathways, moa_matching,
+                             combination_perturbation, dose_response
 - run_alignment_evals(ctx): seq_to_target_retrieval, cross_modality_target_consistency,
                             seq_target_gap_analysis, paired_alignment_quality, mode_sensitivity,
                             fusion_quality, missing_data_robustness, multi_pert_alignment,
-                            target_family_probing
+                            target_family_probing, cross_modality_alignment
 '''
 
 import json
+import pickle
 import random
 import torch
 import torch.nn as nn
@@ -83,6 +85,50 @@ def get_target_embeddings(target_idx, target_bank):
 
 
 REQUIRED_CONFIG_KEYS = ['num_genes', 'embed_dim', 'n_layer', 'heads', 'batch_size']
+HEAVY_INFERENCE_KEYS = {'sample_pred_deltas', 'sample_real_deltas', 'sample_logvars'}
+
+
+class _RunningMeans:
+    def __init__(self, n_genes):
+        z = lambda: np.zeros(n_genes, dtype=np.float64)
+        self._sums = defaultdict(lambda: {'pd': z(), 'rd': z(), 'pa': z(), 'ra': z(), 'ctrl': z()})
+        self._counts = defaultdict(int)
+
+    def add(self, key, pred_delta, real_delta, pred_abs, real_abs, control):
+        s = self._sums[key]
+        s['pd'] += pred_delta
+        s['rd'] += real_delta
+        s['pa'] += pred_abs
+        s['ra'] += real_abs
+        s['ctrl'] += control
+        self._counts[key] += 1
+
+    def finalize(self):
+        keys = list(self._sums.keys())
+        def _mean(field):
+            return {k: (self._sums[k][field] / self._counts[k]).astype(np.float32) for k in keys}
+        return keys, {
+            'mean_pred_deltas': _mean('pd'), 'mean_real_deltas': _mean('rd'),
+            'mean_pred_abs': _mean('pa'), 'mean_real_abs': _mean('ra'),
+            'mean_control_states': _mean('ctrl'),
+        }
+
+
+class _LazyNpzDict(dict):
+    '''Dict that lazy-loads heavy arrays from shard .npz files on first access.'''
+    def __init__(self, data, shard_paths):
+        super().__init__(data)
+        self._shard_paths = shard_paths
+
+    def __getitem__(self, key):
+        if key in HEAVY_INFERENCE_KEYS and key not in dict.keys(self):
+            arrays = []
+            for path in self._shard_paths:
+                npz = np.load(path)
+                arrays.append(npz[key])
+                npz.close()
+            dict.__setitem__(self, key, np.concatenate(arrays, axis=0))
+        return dict.__getitem__(self, key)
 
 
 class EvalContext:
@@ -328,8 +374,32 @@ class EvalContext:
     @property
     def test_inference(self):
         if self._test_inference is None:
-            self._test_inference = self._run_test_inference()
+            if not self._load_inference_cache():
+                inf = self._run_test_inference()
+                self._save_inference_cache(inf)
         return self._test_inference
+
+    def _save_inference_cache(self, inf):
+        cache_dir = self.paths['data_dir'] / 'test_inference_cache'
+        with open(cache_dir / 'metadata.pkl', 'wb') as f:
+            pickle.dump(inf, f)
+        shard_paths = sorted(cache_dir.glob('shard_*.npz'))
+        self._test_inference = _LazyNpzDict(inf, shard_paths)
+        print(f'Cached test inference to {cache_dir} ({len(shard_paths)} shards)')
+
+    def _load_inference_cache(self):
+        cache_dir = self.paths['data_dir'] / 'test_inference_cache'
+        meta_path = cache_dir / 'metadata.pkl'
+        if not meta_path.exists():
+            return False
+        shard_paths = sorted(cache_dir.glob('shard_*.npz'))
+        if not shard_paths:
+            return False
+        with open(meta_path, 'rb') as f:
+            lightweight = pickle.load(f)
+        self._test_inference = _LazyNpzDict(lightweight, shard_paths)
+        print(f'Loaded cached test inference from {cache_dir} ({len(shard_paths)} shards, delete directory to recompute)')
+        return True
 
     def _run_test_inference(self):
         '''Run inference on test set. Returns aggregated and per-sample data.'''
@@ -337,22 +407,41 @@ class EvalContext:
         test_steps = self.config.get('test_total_examples', test_loader.total_samples) // self.config['batch_size']
         N = self.config['num_genes']
 
-        bulk_pred_deltas, bulk_real_deltas = defaultdict(list), defaultdict(list)
-        bulk_pred_abs, bulk_real_abs = defaultdict(list), defaultdict(list)
-        bulk_control_states = defaultdict(list)
-        sample_pred_deltas, sample_real_deltas, sample_logvars = [], [], []
+        shard_size = self.config.get('inference_shard_size', 2560)
+        cache_dir = self.paths['data_dir'] / 'test_inference_cache'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for old_shard in cache_dir.glob('shard_*.npz'):
+            old_shard.unlink()
+
+        shard_pred, shard_real, shard_logvar = [], [], []
+        shard_samples, shard_idx = 0, 0
+
+        def _flush_shard():
+            nonlocal shard_pred, shard_real, shard_logvar, shard_samples, shard_idx
+            if not shard_pred:
+                return
+            np.savez_compressed(
+                cache_dir / f'shard_{shard_idx:04d}.npz',
+                sample_pred_deltas=np.concatenate(shard_pred),
+                sample_real_deltas=np.concatenate(shard_real),
+                sample_logvars=np.concatenate(shard_logvar),
+            )
+            shard_pred, shard_real, shard_logvar = [], [], []
+            shard_samples = 0
+            shard_idx += 1
+
+        bulk_global = _RunningMeans(N)
+        ds_running = defaultdict(lambda: _RunningMeans(N))
+        ct_running = defaultdict(lambda: _RunningMeans(N))
+
         sample_pert_ids, sample_target_ids, sample_pert_mods = [], [], []
         sample_mses, sample_correlations = [], []
-
-        ds_bulk_pred_deltas = defaultdict(lambda: defaultdict(list))
-        ds_bulk_real_deltas = defaultdict(lambda: defaultdict(list))
-        ds_bulk_pred_abs = defaultdict(lambda: defaultdict(list))
-        ds_bulk_real_abs = defaultdict(lambda: defaultdict(list))
-        ds_bulk_control = defaultdict(lambda: defaultdict(list))
+        sample_n_perts, sample_cell_types, sample_doses = [], [], []
+        sample_all_seq_idx, sample_all_target_idx = [], []
+        sample_all_modality, sample_all_mode = [], []
+        sample_dataset_ids = []
         ds_sample_mses, ds_sample_correlations = defaultdict(list), defaultdict(list)
-        ds_sample_pred_deltas, ds_sample_real_deltas = defaultdict(list), defaultdict(list)
-        ds_sample_logvars = defaultdict(list)
-        ds_sample_pert_ids, ds_sample_target_ids, ds_sample_pert_mods = defaultdict(list), defaultdict(list), defaultdict(list)
+        ct_sample_mses, ct_sample_correlations = defaultdict(list), defaultdict(list)
 
         for _ in tqdm(range(test_steps), desc='Running test inference'):
             batch = test_loader.next_batch()
@@ -385,21 +474,34 @@ class EvalContext:
             p_mod_np = batch.modality[:, 0].cpu().numpy()
             cont_x_np = cont_x.cpu().numpy()
             ds_id_np = batch.dataset_id.cpu().numpy()
+            n_perts_np = batch.n_perts.cpu().numpy()
+            cell_type_np = batch.cell_type.cpu().numpy()
+            dose_np = batch.dose.cpu().numpy()
+            all_seq_idx_np = batch.seq_idx.cpu().numpy()
+            all_target_idx_np = batch.target_idx.cpu().numpy()
+            all_modality_np = batch.modality.cpu().numpy()
+            all_mode_np = batch.mode.cpu().numpy()
 
-            sample_pred_deltas.append(pred_delta_np)
-            sample_real_deltas.append(real_delta_np)
-            sample_logvars.append(logvar_np)
+            shard_pred.append(pred_delta_np)
+            shard_real.append(real_delta_np)
+            shard_logvar.append(logvar_np)
+            shard_samples += B
+
             sample_pert_ids.append(p_idx_np)
             sample_target_ids.append(p_target_np)
             sample_pert_mods.append(p_mod_np)
+            sample_n_perts.append(n_perts_np)
+            sample_cell_types.append(cell_type_np)
+            sample_doses.append(dose_np)
+            sample_all_seq_idx.append(all_seq_idx_np)
+            sample_all_target_idx.append(all_target_idx_np)
+            sample_all_modality.append(all_modality_np)
+            sample_all_mode.append(all_mode_np)
+            sample_dataset_ids.append(ds_id_np)
 
             for i in range(B):
                 key = (int(p_idx_np[i]), int(p_target_np[i]), int(p_mod_np[i]))
-                bulk_pred_deltas[key].append(pred_delta_np[i])
-                bulk_real_deltas[key].append(real_delta_np[i])
-                bulk_pred_abs[key].append(pred_abs_np[i])
-                bulk_real_abs[key].append(real_abs_np[i])
-                bulk_control_states[key].append(cont_x_np[i])
+                bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
 
                 sample_mse = float(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
                 top_20_idx = np.argsort(np.abs(real_delta_np[i]))[-20:]
@@ -413,65 +515,61 @@ class EvalContext:
                 sample_correlations.append(sample_corr)
 
                 ds_name = test_loader.dataset_id_to_name.get(int(ds_id_np[i]), 'unknown')
-                ds_bulk_pred_deltas[ds_name][key].append(pred_delta_np[i])
-                ds_bulk_real_deltas[ds_name][key].append(real_delta_np[i])
-                ds_bulk_pred_abs[ds_name][key].append(pred_abs_np[i])
-                ds_bulk_real_abs[ds_name][key].append(real_abs_np[i])
-                ds_bulk_control[ds_name][key].append(cont_x_np[i])
+                ds_running[ds_name].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
                 ds_sample_mses[ds_name].append(sample_mse)
                 ds_sample_correlations[ds_name].append(sample_corr)
-                ds_sample_pred_deltas[ds_name].append(pred_delta_np[i])
-                ds_sample_real_deltas[ds_name].append(real_delta_np[i])
-                ds_sample_logvars[ds_name].append(logvar_np[i])
-                ds_sample_pert_ids[ds_name].append(p_idx_np[i])
-                ds_sample_target_ids[ds_name].append(p_target_np[i])
-                ds_sample_pert_mods[ds_name].append(p_mod_np[i])
 
-        pert_keys = list(bulk_pred_deltas.keys())
-        print(f'Aggregated {len(pert_keys)} perturbations, {len(sample_mses)} samples')
+                ct = int(cell_type_np[i])
+                ct_running[ct].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                ct_sample_mses[ct].append(sample_mse)
+                ct_sample_correlations[ct].append(sample_corr)
 
-        def _finalize_bulk(bulk_pd, bulk_rd, bulk_pa, bulk_ra, bulk_ctrl):
-            keys = list(bulk_pd.keys())
-            return keys, {
-                'mean_pred_deltas': {k: np.mean(np.stack(bulk_pd[k]), axis=0) for k in keys},
-                'mean_real_deltas': {k: np.mean(np.stack(bulk_rd[k]), axis=0) for k in keys},
-                'mean_pred_abs': {k: np.mean(np.stack(bulk_pa[k]), axis=0) for k in keys},
-                'mean_real_abs': {k: np.mean(np.stack(bulk_ra[k]), axis=0) for k in keys},
-                'mean_control_states': {k: np.mean(np.stack(bulk_ctrl[k]), axis=0) for k in keys},
-            }
+            if shard_samples >= shard_size:
+                _flush_shard()
 
-        _, bulk_result = _finalize_bulk(bulk_pred_deltas, bulk_real_deltas, bulk_pred_abs, bulk_real_abs, bulk_control_states)
+        _flush_shard()
+        pert_keys, bulk_result = bulk_global.finalize()
+        print(f'Aggregated {len(pert_keys)} perturbations, {len(sample_mses)} samples, {shard_idx} shards')
+
         result = {
             'pert_keys': pert_keys, **bulk_result,
             'sample_mses': np.array(sample_mses),
             'sample_correlations': np.array(sample_correlations),
-            'sample_pred_deltas': np.concatenate(sample_pred_deltas, axis=0),
-            'sample_real_deltas': np.concatenate(sample_real_deltas, axis=0),
-            'sample_logvars': np.concatenate(sample_logvars, axis=0),
             'sample_pert_ids': np.concatenate(sample_pert_ids, axis=0),
             'sample_target_ids': np.concatenate(sample_target_ids, axis=0),
             'sample_pert_mods': np.concatenate(sample_pert_mods, axis=0),
+            'sample_n_perts': np.concatenate(sample_n_perts, axis=0),
+            'sample_cell_types': np.concatenate(sample_cell_types, axis=0),
+            'sample_doses': np.concatenate(sample_doses, axis=0),
+            'sample_all_seq_idx': np.concatenate(sample_all_seq_idx, axis=0),
+            'sample_all_target_idx': np.concatenate(sample_all_target_idx, axis=0),
+            'sample_all_modality': np.concatenate(sample_all_modality, axis=0),
+            'sample_all_mode': np.concatenate(sample_all_mode, axis=0),
+            'sample_dataset_ids': np.concatenate(sample_dataset_ids, axis=0),
+            'dataset_id_to_name': test_loader.dataset_id_to_name,
         }
 
         by_dataset = {}
-        for ds_name in sorted(ds_bulk_pred_deltas.keys()):
-            ds_keys, ds_bulk = _finalize_bulk(
-                ds_bulk_pred_deltas[ds_name], ds_bulk_real_deltas[ds_name],
-                ds_bulk_pred_abs[ds_name], ds_bulk_real_abs[ds_name], ds_bulk_control[ds_name]
-            )
+        for ds_name in sorted(ds_running.keys()):
+            ds_keys, ds_bulk = ds_running[ds_name].finalize()
             by_dataset[ds_name] = {
                 'pert_keys': ds_keys, **ds_bulk,
                 'sample_mses': np.array(ds_sample_mses[ds_name]),
                 'sample_correlations': np.array(ds_sample_correlations[ds_name]),
-                'sample_pred_deltas': np.array(ds_sample_pred_deltas[ds_name]),
-                'sample_real_deltas': np.array(ds_sample_real_deltas[ds_name]),
-                'sample_logvars': np.array(ds_sample_logvars[ds_name]),
-                'sample_pert_ids': np.array(ds_sample_pert_ids[ds_name]),
-                'sample_target_ids': np.array(ds_sample_target_ids[ds_name]),
-                'sample_pert_mods': np.array(ds_sample_pert_mods[ds_name]),
             }
             print(f'  {ds_name}: {len(ds_keys)} perturbations, {len(ds_sample_mses[ds_name])} samples')
         result['by_dataset'] = by_dataset
+
+        by_cell_type = {}
+        for ct in ct_running:
+            ct_keys, ct_bulk = ct_running[ct].finalize()
+            by_cell_type[ct] = {
+                'pert_keys': ct_keys, **ct_bulk,
+                'sample_mses': np.array(ct_sample_mses[ct]),
+                'sample_correlations': np.array(ct_sample_correlations[ct]),
+            }
+        result['by_cell_type'] = by_cell_type
+
         return result
 
 
@@ -543,11 +641,13 @@ def run_full_model_evals(ctx):
         'uncertainty_calibration': _uncertainty_calibration(ctx),
         'action_vector_pathways': _action_vector_pathways(ctx),
         'moa_matching': _moa_matching(ctx),
+        'combination_perturbation': _combination_perturbation(ctx),
+        'dose_response': _dose_response(ctx),
     }
 
 
 def run_alignment_evals(ctx):
-    '''Run alignment stage evaluations (9 evals for v0.6 dual-path architecture).'''
+    '''Run alignment stage evaluations (10 evals for v0.6 dual-path architecture).'''
     return {
         'seq_to_target_retrieval': _seq_to_target_retrieval(ctx),
         'cross_modality_target_consistency': _cross_modality_target_consistency(ctx),
@@ -558,6 +658,7 @@ def run_alignment_evals(ctx):
         'missing_data_robustness': _missing_data_robustness(ctx),
         'multi_pert_alignment': _multi_pert_alignment(ctx),
         'target_family_probing': _target_family_probing(ctx),
+        'cross_modality_alignment': _cross_modality_alignment(ctx),
     }
 
 
@@ -1041,10 +1142,12 @@ def _compute_expression_prediction(inf, n_genes):
     pert_keys = inf['pert_keys']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
     mean_pred_abs, mean_real_abs = inf['mean_pred_abs'], inf['mean_real_abs']
+    mean_control_states = inf['mean_control_states']
     sample_mses, sample_correlations = inf['sample_mses'], inf['sample_correlations']
 
     TOP_K = 50
     per_pert_r2_all, per_pert_r2_top50, per_pert_mse = [], [], []
+    per_pert_pearson_abs, per_pert_pearson_delta, per_pert_pearson_top50 = [], [], []
     for key in pert_keys:
         pred_abs, real_abs = mean_pred_abs[key], mean_real_abs[key]
         pred_delta, real_delta = mean_pred_deltas[key], mean_real_deltas[key]
@@ -1054,8 +1157,63 @@ def _compute_expression_prediction(inf, n_genes):
         per_pert_r2_top50.append(r2_score(real_abs[top_k_idx], pred_abs[top_k_idx]))
         per_pert_mse.append(np.mean((pred_delta - real_delta)**2))
 
+        if np.std(pred_abs) > 1e-9 and np.std(real_abs) > 1e-9:
+            r, _ = pearsonr(pred_abs, real_abs)
+            per_pert_pearson_abs.append(0.0 if np.isnan(r) else float(r))
+        else:
+            per_pert_pearson_abs.append(0.0)
+
+        if np.std(pred_delta) > 1e-9 and np.std(real_delta) > 1e-9:
+            r, _ = pearsonr(pred_delta, real_delta)
+            per_pert_pearson_delta.append(0.0 if np.isnan(r) else float(r))
+        else:
+            per_pert_pearson_delta.append(0.0)
+
+        pd_top, rd_top = pred_delta[top_k_idx], real_delta[top_k_idx]
+        if np.std(pd_top) > 1e-9 and np.std(rd_top) > 1e-9:
+            r, _ = pearsonr(pd_top, rd_top)
+            per_pert_pearson_top50.append(0.0 if np.isnan(r) else float(r))
+        else:
+            per_pert_pearson_top50.append(0.0)
+
     per_pert_r2_all, per_pert_r2_top50 = np.array(per_pert_r2_all), np.array(per_pert_r2_top50)
     per_pert_mse = np.array(per_pert_mse)
+    per_pert_pearson_abs = np.array(per_pert_pearson_abs)
+    per_pert_pearson_delta = np.array(per_pert_pearson_delta)
+    per_pert_pearson_top50 = np.array(per_pert_pearson_top50)
+
+    # Centroid accuracy
+    if len(pert_keys) >= 2:
+        pred_matrix = np.array([mean_pred_deltas[k] for k in pert_keys])
+        real_matrix = np.array([mean_real_deltas[k] for k in pert_keys])
+        pred_sq = np.sum(pred_matrix**2, axis=1)
+        real_sq = np.sum(real_matrix**2, axis=1)
+        dist_matrix = pred_sq[:, None] + real_sq[None, :] - 2.0 * pred_matrix @ real_matrix.T
+        centroid_acc = float(np.mean(np.argmin(dist_matrix, axis=1) == np.arange(len(pert_keys))))
+    else:
+        centroid_acc = 0.0
+
+    # Fraction beating mean baseline
+    n_beat, n_eval_baseline = 0, 0
+    for key in pert_keys:
+        real_abs = mean_real_abs[key]
+        if np.std(real_abs) < 1e-9:
+            continue
+        pred_abs = mean_pred_abs[key]
+        control = mean_control_states[key]
+        if np.std(pred_abs) > 1e-9:
+            r_model, _ = pearsonr(pred_abs, real_abs)
+        else:
+            r_model = 0.0
+        if np.std(control) > 1e-9:
+            r_baseline, _ = pearsonr(control, real_abs)
+        else:
+            r_baseline = 0.0
+        r_model = 0.0 if np.isnan(r_model) else r_model
+        r_baseline = 0.0 if np.isnan(r_baseline) else r_baseline
+        n_eval_baseline += 1
+        if r_model > r_baseline:
+            n_beat += 1
 
     pred_severity = np.array([np.linalg.norm(mean_pred_deltas[k]) for k in pert_keys])
     real_severity = np.array([np.linalg.norm(mean_real_deltas[k]) for k in pert_keys])
@@ -1079,11 +1237,35 @@ def _compute_expression_prediction(inf, n_genes):
         'perturbation_level': {
             'r2_all_genes': {'mean': float(per_pert_r2_all.mean()), 'median': float(np.median(per_pert_r2_all))},
             'r2_top50_degs': {'mean': float(per_pert_r2_top50.mean()), 'median': float(np.median(per_pert_r2_top50))},
-            'mse': {'mean': float(per_pert_mse.mean()), 'median': float(np.median(per_pert_mse))}
+            'mse': {'mean': float(per_pert_mse.mean()), 'median': float(np.median(per_pert_mse))},
+            'pearson_all_genes': {'mean': float(per_pert_pearson_abs.mean()), 'median': float(np.median(per_pert_pearson_abs))},
+            'pearson_delta_all_genes': {'mean': float(per_pert_pearson_delta.mean()), 'median': float(np.median(per_pert_pearson_delta))},
+            'pearson_top50_degs': {'mean': float(per_pert_pearson_top50.mean()), 'median': float(np.median(per_pert_pearson_top50))},
         },
+        'centroid_accuracy': centroid_acc,
+        'vs_baseline': {'beat_rate': float(n_beat / n_eval_baseline) if n_eval_baseline > 0 else 0.0, 'n_evaluated': n_eval_baseline},
         'severity': {'pearson_r': float(severity_pearson), 'spearman_r': float(severity_spearman)},
         'error_by_magnitude': error_by_magnitude
     }
+
+
+def _gears_benchmark_summary(result):
+    summary = {}
+    by_ds = result.get('by_dataset', {})
+    for ds_name, gears_name in [('k562e_raw', 'replogle_k562'), ('adamson', 'adamson')]:
+        ds = by_ds.get(ds_name)
+        if not ds:
+            continue
+        pl = ds.get('perturbation_level', {})
+        summary[gears_name] = {
+            'pearson_all_genes': pl.get('pearson_all_genes', {}),
+            'pearson_delta_all_genes': pl.get('pearson_delta_all_genes', {}),
+            'r2_all_genes': pl.get('r2_all_genes', {}),
+            'centroid_accuracy': ds.get('centroid_accuracy'),
+            'n_test_perturbations': ds.get('config', {}).get('test_perturbations'),
+            'uses_gears_official_splits': ds_name == 'k562e_raw',
+        }
+    return summary
 
 
 def _expression_prediction(ctx):
@@ -1091,12 +1273,27 @@ def _expression_prediction(ctx):
     inf = ctx.test_inference
     n_genes = ctx.config['num_genes']
     result = _compute_expression_prediction(inf, n_genes)
-    print(f'expression_prediction: MSE={result["sample_level"]["mse"]:.4f}, R2_all={result["perturbation_level"]["r2_all_genes"]["mean"]:.4f}')
+    print(f'expression_prediction: Pearson={result["perturbation_level"]["pearson_all_genes"]["mean"]:.4f}, R2={result["perturbation_level"]["r2_all_genes"]["mean"]:.4f}, Centroid_acc={result["centroid_accuracy"]:.4f}')
     by_dataset = {}
     for ds, ds_inf in inf.get('by_dataset', {}).items():
         if len(ds_inf.get('pert_keys', [])) > 0:
             by_dataset[ds] = _compute_expression_prediction(ds_inf, n_genes)
     result['by_dataset'] = by_dataset
+    result['gears_benchmark'] = _gears_benchmark_summary(result)
+
+    by_cell_type = inf.get('by_cell_type', {})
+    if len(by_cell_type) > 1:
+        ct_id_to_name = {}
+        ct_map_path = ctx.paths['data_dir'] / 'cell_type_to_id.json'
+        if ct_map_path.exists():
+            with open(ct_map_path) as f:
+                ct_id_to_name = {v: k for k, v in json.load(f).items()}
+        result['by_cell_type'] = {}
+        for ct_id, ct_inf in by_cell_type.items():
+            if len(ct_inf.get('pert_keys', [])) > 0:
+                ct_name = ct_id_to_name.get(ct_id, f'cell_type_{ct_id}')
+                result['by_cell_type'][ct_name] = _compute_expression_prediction(ct_inf, n_genes)
+
     return result
 
 
@@ -1163,11 +1360,34 @@ def _compute_gene_level_analysis(inf, n_genes, direction_threshold):
             deg_results[k]['ndcg'].append(_ndcg_at_k(pred_rank, true_rank, k))
             deg_results[k]['overlap'].append(len(set(pred_rank[:k]) & set(true_rank[:k])))
 
-    return {
+    K_DIR = 20
+    up_precisions, down_precisions = [], []
+    de_jaccards = []
+    for key in pert_keys:
+        pred_d, real_d = mean_pred_deltas[key], mean_real_deltas[key]
+        pred_up, real_up = set(np.argsort(pred_d)[-K_DIR:]), set(np.argsort(real_d)[-K_DIR:])
+        pred_down, real_down = set(np.argsort(pred_d)[:K_DIR]), set(np.argsort(real_d)[:K_DIR])
+        up_precisions.append(len(pred_up & real_up) / K_DIR)
+        down_precisions.append(len(pred_down & real_down) / K_DIR)
+        pred_de = set(np.where(np.abs(pred_d) > direction_threshold)[0])
+        real_de = set(np.where(np.abs(real_d) > direction_threshold)[0])
+        union = len(pred_de | real_de)
+        if union > 0:
+            de_jaccards.append(len(pred_de & real_de) / union)
+
+    result = {
         'config': {'test_perturbations': len(pert_keys), 'genes': n_genes, 'direction_threshold': direction_threshold},
-        'direction_of_effect': {'all_genes_accuracy': float(overall_accuracy), 'top50_degs_accuracy': float(top_deg_accuracy), 'f1_up': float(f1_up), 'f1_down': float(f1_down), 'f1_unchanged': float(f1_unchanged), 'accuracy_by_magnitude': accuracy_by_magnitude},
-        'top_deg_recovery': {str(k): {'precision': float(np.mean(deg_results[k]['precision'])), 'ndcg': float(np.mean(deg_results[k]['ndcg'])), 'overlap': float(np.mean(deg_results[k]['overlap'])), 'vs_random': float(np.mean(deg_results[k]['overlap']) / (k * k / n_genes))} for k in K_VALUES}
+        'direction_of_effect': {
+            'all_genes_accuracy': float(overall_accuracy), 'top50_degs_accuracy': float(top_deg_accuracy),
+            'f1_up': float(f1_up), 'f1_down': float(f1_down), 'f1_unchanged': float(f1_unchanged),
+            'accuracy_by_magnitude': accuracy_by_magnitude,
+            'precision_up_at_20': float(np.mean(up_precisions)), 'precision_down_at_20': float(np.mean(down_precisions)),
+        },
+        'top_deg_recovery': {str(k): {'precision': float(np.mean(deg_results[k]['precision'])), 'ndcg': float(np.mean(deg_results[k]['ndcg'])), 'overlap': float(np.mean(deg_results[k]['overlap'])), 'vs_random': float(np.mean(deg_results[k]['overlap']) / (k * k / n_genes))} for k in K_VALUES},
     }
+    if de_jaccards:
+        result['common_degs'] = {'jaccard_mean': float(np.mean(de_jaccards)), 'jaccard_median': float(np.median(de_jaccards)), 'n_perturbations': len(de_jaccards)}
+    return result
 
 
 def _gene_level_analysis(ctx, direction_threshold=0.25):
@@ -1321,22 +1541,45 @@ def _compute_uncertainty_calibration(inf, n_bins):
         bin_err_mean = err_norm[mask].mean()
         ece += bin_weight * abs(bin_unc_mean - bin_err_mean)
 
-    pert_unc, pert_err = defaultdict(list), defaultdict(list)
+    # Selective prediction curve
+    sort_idx = np.argsort(sample_unc)
+    selective = {}
+    for pct in [25, 50, 75, 100]:
+        n = max(1, int(len(sort_idx) * pct / 100))
+        idx = sort_idx[:n]
+        selective[f'top_{pct}pct'] = {'mse': float(np.mean(sample_mse[idx])), 'n_samples': n}
+
+    pert_groups = defaultdict(list)
     for i in range(len(pert_ids)):
         key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]))
-        pert_unc[key].append(sample_unc[i])
-        pert_err[key].append(sample_mse[i])
-    pert_unc_arr = np.array([np.mean(pert_unc[p]) for p in pert_unc])
-    pert_err_arr = np.array([np.mean(pert_err[p]) for p in pert_err])
+        pert_groups[key].append(i)
+
+    pert_unc_arr = np.array([np.mean(sample_unc[pert_groups[p]]) for p in pert_groups])
+    pert_err_arr = np.array([np.mean(sample_mse[pert_groups[p]]) for p in pert_groups])
     pert_pearson, _ = pearsonr(pert_unc_arr, pert_err_arr)
     pert_spearman, _ = spearmanr(pert_unc_arr, pert_err_arr)
 
-    return {
-        'config': {'samples': len(sample_mse), 'perturbations': len(pert_unc)},
+    # Variance prediction R²
+    variance_r2s = []
+    for key, indices in pert_groups.items():
+        if len(indices) < 3:
+            continue
+        idx = np.array(indices)
+        observed_var = np.var(real_deltas[idx], axis=0)
+        predicted_var = np.mean(np.exp(sample_logvars[idx]), axis=0)
+        if np.std(observed_var) > 1e-9 and np.std(predicted_var) > 1e-9:
+            variance_r2s.append(float(r2_score(observed_var, predicted_var)))
+
+    result = {
+        'config': {'samples': len(sample_mse), 'perturbations': len(pert_groups)},
         'sample_level': {'uncertainty_error_pearson': float(pearson_r), 'uncertainty_error_spearman': float(spearman_r), 'expected_calibration_error': float(ece), 'monotonicity_score': float(monotonicity)},
         'perturbation_level': {'uncertainty_error_pearson': float(pert_pearson), 'uncertainty_error_spearman': float(pert_spearman)},
-        'bin_analysis': {'n_bins': n_bins, 'bin_mean_errors': [float(e) for e in bin_mean_error]}
+        'bin_analysis': {'n_bins': n_bins, 'bin_mean_errors': [float(e) for e in bin_mean_error]},
+        'selective_prediction': selective,
     }
+    if variance_r2s:
+        result['variance_prediction'] = {'r2_mean': float(np.mean(variance_r2s)), 'n_perturbations': len(variance_r2s)}
+    return result
 
 
 def _uncertainty_calibration(ctx, n_bins=10):
@@ -1345,9 +1588,22 @@ def _uncertainty_calibration(ctx, n_bins=10):
     result = _compute_uncertainty_calibration(inf, n_bins)
     print(f'uncertainty_calibration: ECE={result["sample_level"]["expected_calibration_error"]:.4f}, Monotonicity={result["sample_level"]["monotonicity_score"]:.2%}')
     by_dataset = {}
-    for ds, ds_inf in inf.get('by_dataset', {}).items():
-        if len(ds_inf.get('sample_pred_deltas', [])) > 0:
-            by_dataset[ds] = _compute_uncertainty_calibration(ds_inf, n_bins)
+    ds_id_to_name = inf.get('dataset_id_to_name', {})
+    ds_ids = inf.get('sample_dataset_ids')
+    if ds_ids is not None:
+        for ds_id, ds_name in ds_id_to_name.items():
+            mask = ds_ids == ds_id
+            if mask.sum() == 0:
+                continue
+            ds_inf = {
+                'sample_pred_deltas': inf['sample_pred_deltas'][mask],
+                'sample_real_deltas': inf['sample_real_deltas'][mask],
+                'sample_logvars': inf['sample_logvars'][mask],
+                'sample_pert_ids': inf['sample_pert_ids'][mask],
+                'sample_target_ids': inf['sample_target_ids'][mask],
+                'sample_pert_mods': inf['sample_pert_mods'][mask],
+            }
+            by_dataset[ds_name] = _compute_uncertainty_calibration(ds_inf, n_bins)
     result['by_dataset'] = by_dataset
     return result
 
@@ -1470,6 +1726,121 @@ def _moa_matching(ctx):
     return {
         'config': {'n_pathways': len(valid_pathways), 'n_perturbations': len(all_keys)},
         'similarity': {'mean_within_pathway': float(mean_within), 'mean_between_pathway': float(mean_between), 'similarity_ratio': float(ratio), 'mann_whitney_p': float(p_val), 'n_within_pairs': len(within_sims), 'n_between_pairs': len(between_sims)}
+    }
+
+
+def _combination_perturbation(ctx):
+    '''Evaluate model performance on multi-perturbation samples (up to 4 perts, any mix of DNA/chemical).'''
+    inf = ctx.test_inference
+    n_genes = ctx.config['num_genes']
+
+    n_perts_all = inf['sample_n_perts']
+    combo_sample_mask = n_perts_all > 1
+    if combo_sample_mask.sum() == 0:
+        return {'skipped': True, 'reason': 'no multi-pert samples in test set'}
+
+    combo_keys = set()
+    for i in range(len(n_perts_all)):
+        if n_perts_all[i] > 1:
+            key = (int(inf['sample_pert_ids'][i]), int(inf['sample_target_ids'][i]), int(inf['sample_pert_mods'][i]))
+            combo_keys.add(key)
+
+    combo_inf = {
+        'pert_keys': [k for k in inf['pert_keys'] if k in combo_keys],
+        'mean_pred_deltas': {k: v for k, v in inf['mean_pred_deltas'].items() if k in combo_keys},
+        'mean_real_deltas': {k: v for k, v in inf['mean_real_deltas'].items() if k in combo_keys},
+        'mean_pred_abs': {k: v for k, v in inf['mean_pred_abs'].items() if k in combo_keys},
+        'mean_real_abs': {k: v for k, v in inf['mean_real_abs'].items() if k in combo_keys},
+        'mean_control_states': {k: v for k, v in inf['mean_control_states'].items() if k in combo_keys},
+        'sample_mses': inf['sample_mses'][combo_sample_mask],
+        'sample_correlations': inf['sample_correlations'][combo_sample_mask],
+    }
+
+    combo_n_perts = n_perts_all[combo_sample_mask]
+    combo_modalities = inf['sample_all_modality'][combo_sample_mask]
+    composition = {'by_n_perts': {}, 'modality_mix': defaultdict(int)}
+    for n in sorted(set(combo_n_perts)):
+        composition['by_n_perts'][int(n)] = int((combo_n_perts == n).sum())
+    for i in range(len(combo_n_perts)):
+        n = int(combo_n_perts[i])
+        mods = tuple(sorted(int(combo_modalities[i, j]) for j in range(n)))
+        mod_names = tuple('dna' if m == 0 else 'chem' if m == 2 else f'mod{m}' for m in mods)
+        composition['modality_mix']['+'.join(mod_names)] += 1
+    composition['modality_mix'] = dict(composition['modality_mix'])
+
+    expr_pred = _compute_expression_prediction(combo_inf, n_genes)
+    print(f'combination_perturbation: {len(combo_keys)} combo perts, {int(combo_sample_mask.sum())} samples')
+
+    return {
+        'expression_prediction': expr_pred,
+        'n_combo_perturbations': len(combo_keys),
+        'n_combo_samples': int(combo_sample_mask.sum()),
+        'composition': composition,
+    }
+
+
+def _dose_response(ctx):
+    '''Does predicted severity increase monotonically with dose?'''
+    inf = ctx.test_inference
+    by_ds = inf.get('by_dataset', {})
+    sciplex_inf = by_ds.get('sciplex')
+    if not sciplex_inf or len(sciplex_inf.get('pert_keys', [])) == 0:
+        return {'skipped': True, 'reason': 'no sciplex dataset in test set'}
+
+    doses = inf['sample_doses']
+    ds_id_to_name = inf.get('dataset_id_to_name', {})
+    name_to_ds_id = {v: k for k, v in ds_id_to_name.items()}
+    sciplex_ds_id = name_to_ds_id.get('sciplex')
+    if sciplex_ds_id is None:
+        return {'skipped': True, 'reason': 'sciplex dataset_id not found'}
+    sciplex_mask = inf['sample_dataset_ids'] == sciplex_ds_id
+
+    slot0_dose = doses[sciplex_mask, 0]
+    valid_dose_mask = slot0_dose > 0
+    if valid_dose_mask.sum() == 0:
+        return {'skipped': True, 'reason': 'no dose data (dose=-1.0 for all samples)'}
+
+    pred_deltas = inf['sample_pred_deltas'][sciplex_mask][valid_dose_mask]
+    pert_ids = inf['sample_pert_ids'][sciplex_mask][valid_dose_mask]
+    target_ids = inf['sample_target_ids'][sciplex_mask][valid_dose_mask]
+    pert_mods = inf['sample_pert_mods'][sciplex_mask][valid_dose_mask]
+    valid_doses = slot0_dose[valid_dose_mask]
+
+    drug_dose_severity = defaultdict(list)
+    for i in range(len(valid_doses)):
+        key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]))
+        severity = float(np.linalg.norm(pred_deltas[i]))
+        drug_dose_severity[key].append((float(valid_doses[i]), severity))
+
+    monotonic_count, total_pairs = 0, 0
+    all_doses_flat, all_severities_flat = [], []
+    for key, pairs in drug_dose_severity.items():
+        dose_levels = defaultdict(list)
+        for dose, sev in pairs:
+            dose_levels[dose].append(sev)
+        sorted_doses = sorted(dose_levels.keys())
+        if len(sorted_doses) < 2:
+            continue
+        mean_sevs = [np.mean(dose_levels[d]) for d in sorted_doses]
+        for i in range(len(sorted_doses) - 1):
+            total_pairs += 1
+            if mean_sevs[i + 1] > mean_sevs[i]:
+                monotonic_count += 1
+        all_doses_flat.extend(sorted_doses)
+        all_severities_flat.extend(mean_sevs)
+
+    if total_pairs == 0:
+        return {'skipped': True, 'reason': 'no drugs with multiple dose levels'}
+
+    dose_severity_spearman, _ = spearmanr(all_doses_flat, all_severities_flat)
+
+    print(f'dose_response: monotonicity={monotonic_count/total_pairs:.2%}, spearman={dose_severity_spearman:.4f}')
+
+    return {
+        'config': {'n_drugs': len(drug_dose_severity), 'n_valid_samples': int(valid_dose_mask.sum())},
+        'monotonicity_score': float(monotonic_count / total_pairs),
+        'dose_severity_spearman': float(dose_severity_spearman),
+        'n_dose_pairs': total_pairs,
     }
 
 
@@ -2093,3 +2464,71 @@ def _target_family_probing(ctx):
     print(f'target_family_probing: {acc_summary}')
 
     return {'config': {'n_families': n_families, 'n_valid_perts': len(valid_perts)}, 'by_embedding_type': results}
+
+
+def _cross_modality_alignment(ctx):
+    '''Do DNA and chemical perturbations targeting the same gene produce similar action vectors?'''
+    inf = ctx.alignment_inference
+    pairs = ctx.alignment_pairs
+
+    if 'dna_actions_norm' not in inf or 'chem_actions_norm' not in inf:
+        return {'skipped': True, 'reason': 'need both dna_actions_norm and chem_actions_norm'}
+
+    dna_norm = inf['dna_actions_norm']
+    chem_norm = inf['chem_actions_norm']
+
+    dna_mask = pairs['modality'] == 0
+    chem_mask = pairs['modality'] == 2
+    target_to_dna = defaultdict(set)
+    target_to_chem = defaultdict(set)
+    for s, t in zip(pairs['seq_idx'][dna_mask], pairs['target_idx'][dna_mask]):
+        if s < dna_norm.shape[0]:
+            target_to_dna[int(t)].add(int(s))
+    for s, t in zip(pairs['seq_idx'][chem_mask], pairs['target_idx'][chem_mask]):
+        if s < chem_norm.shape[0]:
+            target_to_chem[int(t)].add(int(s))
+
+    matched_targets = [t for t in target_to_dna if t in target_to_chem]
+    if len(matched_targets) < 5:
+        return {'skipped': True, 'reason': f'insufficient cross-modality pairs ({len(matched_targets)} matched targets, need 5)'}
+
+    matched_sims, random_sims = [], []
+    rng = np.random.RandomState(42)
+    for t in matched_targets:
+        for dna_idx in target_to_dna[t]:
+            for chem_idx in target_to_chem[t]:
+                sim = torch.dot(dna_norm[dna_idx], chem_norm[chem_idx]).item()
+                matched_sims.append(sim)
+    all_chem_indices = list({s for seqs in target_to_chem.values() for s in seqs})
+    all_dna_indices = list({s for seqs in target_to_dna.values() for s in seqs})
+    n_random = min(5000, len(all_dna_indices) * len(all_chem_indices))
+    for _ in range(n_random):
+        d = rng.choice(all_dna_indices)
+        c = rng.choice(all_chem_indices)
+        sim = torch.dot(dna_norm[d], chem_norm[c]).item()
+        random_sims.append(sim)
+
+    K_VALUES = [1, 5, 10]
+    all_chem_vecs = chem_norm[all_chem_indices]
+    reciprocal_ranks = []
+    recall_at_k = {k: [] for k in K_VALUES}
+    for t in matched_targets:
+        correct_chem = target_to_chem[t]
+        for dna_idx in target_to_dna[t]:
+            sims = torch.mv(all_chem_vecs, dna_norm[dna_idx]).cpu().numpy()
+            sorted_indices = np.argsort(sims)[::-1]
+            for rank, idx in enumerate(sorted_indices, 1):
+                if all_chem_indices[idx] in correct_chem:
+                    reciprocal_ranks.append(1.0 / rank)
+                    for k in K_VALUES:
+                        recall_at_k[k].append(1 if rank <= k else 0)
+                    break
+
+    result = {
+        'config': {'n_matched_targets': len(matched_targets), 'n_matched_pairs': len(matched_sims), 'n_dna_queries': len(reciprocal_ranks)},
+        'cosine_similarity': {'matched_mean': float(np.mean(matched_sims)), 'random_mean': float(np.mean(random_sims)), 'gap': float(np.mean(matched_sims) - np.mean(random_sims))},
+    }
+    if reciprocal_ranks:
+        result['retrieval'] = {'mrr': float(np.mean(reciprocal_ranks)), 'recall_at_k': {str(k): float(np.mean(recall_at_k[k])) for k in K_VALUES}}
+    print(f'cross_modality_alignment: {len(matched_targets)} matched targets, matched_sim={np.mean(matched_sims):.4f}, random_sim={np.mean(random_sims):.4f}')
+    return result
