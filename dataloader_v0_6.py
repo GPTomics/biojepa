@@ -12,6 +12,8 @@ TrainingBatch = namedtuple('TrainingBatch', [
     'batch_id', 'cell_type'
 ])
 
+EvalBatch = namedtuple('EvalBatch', TrainingBatch._fields + ('dataset_id',))
+
 AlignmentBatch = namedtuple('AlignmentBatch', ['seq_idx', 'target_idx', 'modality', 'mode'])
 
 PretrainBatch = namedtuple('PretrainBatch', ['x', 'total'])
@@ -28,11 +30,13 @@ def _parse_dataset_name(shard_path, split):
 
 
 class _BaseShardLoader:
-    def __init__(self, batch_size, split, data_dir, device, total_samples=None, min_dataset_fraction=0.1):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, min_dataset_fraction=0.1, seed=None):
         self.batch_size = batch_size
         self.split = split
         self.device = device
         self.min_dataset_fraction = min_dataset_fraction
+        self._rng_py = random.Random(seed) if seed is not None else random.Random()
+        self._rng_np = np.random.RandomState(seed) if seed is not None else np.random.RandomState()
 
         self.data_dir = Path(data_dir)
         self.data_root = self.data_dir / split
@@ -91,7 +95,7 @@ class _BaseShardLoader:
 
     def reset(self):
         self.remaining_shards = list(self.shards)
-        random.shuffle(self.remaining_shards)
+        self._rng_py.shuffle(self.remaining_shards)
         self.current_shard_idx = -1
         self.load_next_shard()
 
@@ -112,7 +116,7 @@ class _BaseShardLoader:
         self.data_tuple = self.load_file(filename)
 
         n_samples = len(self.data_tuple[0])
-        self.perm = np.random.permutation(n_samples)
+        self.perm = self._rng_np.permutation(n_samples)
         self.current_position = 0
         self.total_samples_in_shard = n_samples
 
@@ -159,8 +163,8 @@ class _BaseShardLoader:
 
 
 class PretrainLoader(_BaseShardLoader):
-    def __init__(self, batch_size, split, data_dir, device, total_samples=None):
-        super().__init__(batch_size, split, data_dir, device, total_samples)
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
+        super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
 
     def load_file(self, filename):
         #print(f'loading {filename}')
@@ -175,8 +179,8 @@ class PretrainLoader(_BaseShardLoader):
 
 
 class AlignmentLoader(_BaseShardLoader):
-    def __init__(self, batch_size, split, data_dir, device, total_samples=None):
-        super().__init__(batch_size, split, data_dir, device, total_samples)
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
+        super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
 
     def load_file(self, filename):
         #print(f'loading {filename}')
@@ -193,9 +197,9 @@ class AlignmentLoader(_BaseShardLoader):
 
 
 class TrainingLoader(_BaseShardLoader):
-    def __init__(self, batch_size, split, data_dir, device, total_samples=None):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
         self._dataset_offsets = None
-        super().__init__(batch_size, split, data_dir, device, total_samples)
+        super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
 
     def _build_dataset_offsets(self):
         names = set()
@@ -203,7 +207,8 @@ class TrainingLoader(_BaseShardLoader):
             name = _parse_dataset_name(shard, self.split)
             if name:
                 names.add(name)
-        name_to_offset = {name: i * 10000 for i, name in enumerate(sorted(names))}
+        self._dataset_names = sorted(names)
+        name_to_offset = {name: i * 10000 for i, name in enumerate(self._dataset_names)}
         self._dataset_offsets = {}
         for shard in self.shards:
             name = _parse_dataset_name(shard, self.split)
@@ -238,3 +243,27 @@ class TrainingLoader(_BaseShardLoader):
     def next_batch(self):
         batch = super().next_batch()
         return TrainingBatch(*batch)
+
+
+class EvalLoader(TrainingLoader):
+
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
+        self._dataset_name_to_id = None
+        self.dataset_id_to_name = None
+        super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
+
+    def _build_dataset_offsets(self):
+        super()._build_dataset_offsets()
+        self._dataset_name_to_id = {name: i for i, name in enumerate(self._dataset_names)}
+        self.dataset_id_to_name = {i: name for i, name in enumerate(self._dataset_names)}
+
+    def load_file(self, filename):
+        result = super().load_file(filename)
+        ds_name = _parse_dataset_name(filename, self.split) or 'unknown'
+        ds_id = self._dataset_name_to_id.get(ds_name, -1)
+        dataset_ids = np.full(len(result[0]), ds_id, dtype=np.int64)
+        return result + (dataset_ids,)
+
+    def next_batch(self):
+        batch = _BaseShardLoader.next_batch(self)
+        return EvalBatch(*batch)

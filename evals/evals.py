@@ -30,7 +30,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist
 
 import biojepa_v0_6 as model
-from dataloader_v0_6 import TrainingLoader
+from dataloader_v0_6 import TrainingLoader, EvalLoader
 from .linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from .pathway_utils import load_pathway_annotations, map_genes_to_pathways, compute_pathway_clustering_metrics
 from .linear_classifier import train_linear_classifier
@@ -92,7 +92,7 @@ class EvalContext:
         missing_keys = [k for k in REQUIRED_CONFIG_KEYS if k not in config]
         if missing_keys:
             raise ValueError(f'Missing required config keys: {missing_keys}. Required: {REQUIRED_CONFIG_KEYS}')
-        self.config = {'test_total_examples': 38829, 'pert_latent_dim': 320, 'pert_mode_dim': 64, 'verbose': True, **config}
+        self.config = {'pert_latent_dim': 320, 'pert_mode_dim': 64, 'verbose': True, **config}
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.paths = self._get_paths(Path(data_root), Path(checkpoint_root), Path(ref_dir))
         if self.config['verbose']:
@@ -333,8 +333,8 @@ class EvalContext:
 
     def _run_test_inference(self):
         '''Run inference on test set. Returns aggregated and per-sample data.'''
-        test_loader = TrainingLoader(batch_size=self.config['batch_size'], split=self.config.get('eval_split', 'test'), data_dir=self.paths['train_dir'], device=self.device)
-        test_steps = self.config['test_total_examples'] // self.config['batch_size']
+        test_loader = EvalLoader(batch_size=self.config['batch_size'], split=self.config.get('eval_split', 'test'), data_dir=self.paths['train_dir'], device=self.device, seed=self.config.get('seed', 1337))
+        test_steps = self.config.get('test_total_examples', test_loader.total_samples) // self.config['batch_size']
         N = self.config['num_genes']
 
         bulk_pred_deltas, bulk_real_deltas = defaultdict(list), defaultdict(list)
@@ -343,6 +343,16 @@ class EvalContext:
         sample_pred_deltas, sample_real_deltas, sample_logvars = [], [], []
         sample_pert_ids, sample_target_ids, sample_pert_mods = [], [], []
         sample_mses, sample_correlations = [], []
+
+        ds_bulk_pred_deltas = defaultdict(lambda: defaultdict(list))
+        ds_bulk_real_deltas = defaultdict(lambda: defaultdict(list))
+        ds_bulk_pred_abs = defaultdict(lambda: defaultdict(list))
+        ds_bulk_real_abs = defaultdict(lambda: defaultdict(list))
+        ds_bulk_control = defaultdict(lambda: defaultdict(list))
+        ds_sample_mses, ds_sample_correlations = defaultdict(list), defaultdict(list)
+        ds_sample_pred_deltas, ds_sample_real_deltas = defaultdict(list), defaultdict(list)
+        ds_sample_logvars = defaultdict(list)
+        ds_sample_pert_ids, ds_sample_target_ids, ds_sample_pert_mods = defaultdict(list), defaultdict(list), defaultdict(list)
 
         for _ in tqdm(range(test_steps), desc='Running test inference'):
             batch = test_loader.next_batch()
@@ -374,6 +384,7 @@ class EvalContext:
             p_target_np = batch.target_idx[:, 0].cpu().numpy()
             p_mod_np = batch.modality[:, 0].cpu().numpy()
             cont_x_np = cont_x.cpu().numpy()
+            ds_id_np = batch.dataset_id.cpu().numpy()
 
             sample_pred_deltas.append(pred_delta_np)
             sample_real_deltas.append(real_delta_np)
@@ -390,25 +401,48 @@ class EvalContext:
                 bulk_real_abs[key].append(real_abs_np[i])
                 bulk_control_states[key].append(cont_x_np[i])
 
-                sample_mses.append(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
+                sample_mse = float(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
                 top_20_idx = np.argsort(np.abs(real_delta_np[i]))[-20:]
                 p_top, t_top = pred_delta_np[i][top_20_idx], real_delta_np[i][top_20_idx]
                 if np.std(p_top) > 1e-9 and np.std(t_top) > 1e-9:
                     corr, _ = pearsonr(p_top, t_top)
-                    sample_correlations.append(0.0 if np.isnan(corr) else corr)
+                    sample_corr = 0.0 if np.isnan(corr) else float(corr)
                 else:
-                    sample_correlations.append(0.0)
+                    sample_corr = 0.0
+                sample_mses.append(sample_mse)
+                sample_correlations.append(sample_corr)
+
+                ds_name = test_loader.dataset_id_to_name.get(int(ds_id_np[i]), 'unknown')
+                ds_bulk_pred_deltas[ds_name][key].append(pred_delta_np[i])
+                ds_bulk_real_deltas[ds_name][key].append(real_delta_np[i])
+                ds_bulk_pred_abs[ds_name][key].append(pred_abs_np[i])
+                ds_bulk_real_abs[ds_name][key].append(real_abs_np[i])
+                ds_bulk_control[ds_name][key].append(cont_x_np[i])
+                ds_sample_mses[ds_name].append(sample_mse)
+                ds_sample_correlations[ds_name].append(sample_corr)
+                ds_sample_pred_deltas[ds_name].append(pred_delta_np[i])
+                ds_sample_real_deltas[ds_name].append(real_delta_np[i])
+                ds_sample_logvars[ds_name].append(logvar_np[i])
+                ds_sample_pert_ids[ds_name].append(p_idx_np[i])
+                ds_sample_target_ids[ds_name].append(p_target_np[i])
+                ds_sample_pert_mods[ds_name].append(p_mod_np[i])
 
         pert_keys = list(bulk_pred_deltas.keys())
         print(f'Aggregated {len(pert_keys)} perturbations, {len(sample_mses)} samples')
 
-        return {
-            'pert_keys': pert_keys,
-            'mean_pred_deltas': {k: np.mean(np.stack(bulk_pred_deltas[k]), axis=0) for k in pert_keys},
-            'mean_real_deltas': {k: np.mean(np.stack(bulk_real_deltas[k]), axis=0) for k in pert_keys},
-            'mean_pred_abs': {k: np.mean(np.stack(bulk_pred_abs[k]), axis=0) for k in pert_keys},
-            'mean_real_abs': {k: np.mean(np.stack(bulk_real_abs[k]), axis=0) for k in pert_keys},
-            'mean_control_states': {k: np.mean(np.stack(bulk_control_states[k]), axis=0) for k in pert_keys},
+        def _finalize_bulk(bulk_pd, bulk_rd, bulk_pa, bulk_ra, bulk_ctrl):
+            keys = list(bulk_pd.keys())
+            return keys, {
+                'mean_pred_deltas': {k: np.mean(np.stack(bulk_pd[k]), axis=0) for k in keys},
+                'mean_real_deltas': {k: np.mean(np.stack(bulk_rd[k]), axis=0) for k in keys},
+                'mean_pred_abs': {k: np.mean(np.stack(bulk_pa[k]), axis=0) for k in keys},
+                'mean_real_abs': {k: np.mean(np.stack(bulk_ra[k]), axis=0) for k in keys},
+                'mean_control_states': {k: np.mean(np.stack(bulk_ctrl[k]), axis=0) for k in keys},
+            }
+
+        _, bulk_result = _finalize_bulk(bulk_pred_deltas, bulk_real_deltas, bulk_pred_abs, bulk_real_abs, bulk_control_states)
+        result = {
+            'pert_keys': pert_keys, **bulk_result,
             'sample_mses': np.array(sample_mses),
             'sample_correlations': np.array(sample_correlations),
             'sample_pred_deltas': np.concatenate(sample_pred_deltas, axis=0),
@@ -418,6 +452,27 @@ class EvalContext:
             'sample_target_ids': np.concatenate(sample_target_ids, axis=0),
             'sample_pert_mods': np.concatenate(sample_pert_mods, axis=0),
         }
+
+        by_dataset = {}
+        for ds_name in sorted(ds_bulk_pred_deltas.keys()):
+            ds_keys, ds_bulk = _finalize_bulk(
+                ds_bulk_pred_deltas[ds_name], ds_bulk_real_deltas[ds_name],
+                ds_bulk_pred_abs[ds_name], ds_bulk_real_abs[ds_name], ds_bulk_control[ds_name]
+            )
+            by_dataset[ds_name] = {
+                'pert_keys': ds_keys, **ds_bulk,
+                'sample_mses': np.array(ds_sample_mses[ds_name]),
+                'sample_correlations': np.array(ds_sample_correlations[ds_name]),
+                'sample_pred_deltas': np.array(ds_sample_pred_deltas[ds_name]),
+                'sample_real_deltas': np.array(ds_sample_real_deltas[ds_name]),
+                'sample_logvars': np.array(ds_sample_logvars[ds_name]),
+                'sample_pert_ids': np.array(ds_sample_pert_ids[ds_name]),
+                'sample_target_ids': np.array(ds_sample_target_ids[ds_name]),
+                'sample_pert_mods': np.array(ds_sample_pert_mods[ds_name]),
+            }
+            print(f'  {ds_name}: {len(ds_keys)} perturbations, {len(ds_sample_mses[ds_name])} samples')
+        result['by_dataset'] = by_dataset
+        return result
 
 
 def save_report(results, output_path='eval_report.json'):
@@ -510,6 +565,26 @@ def run_alignment_evals(ctx):
 # PRETRAINING EVALS
 # =============================================================================
 
+def _compute_batch_invariance(embeddings, batch_ids, pert_ids, device, seed):
+    batch_map = {b: i for i, b in enumerate(sorted(np.unique(batch_ids)))}
+    pert_map = {p: i for i, p in enumerate(sorted(np.unique(pert_ids)))}
+    n_batch, n_pert = len(batch_map), len(pert_map)
+    if n_batch < 2:
+        return None
+    batch_labels = np.array([batch_map[b] for b in batch_ids])
+    pert_labels = np.array([pert_map[p] for p in pert_ids])
+    train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=seed)
+    _, _, batch_acc = train_linear_classifier(embeddings[train_idx], batch_labels[train_idx], embeddings[val_idx], batch_labels[val_idx], n_batch, device, epochs=100)
+    _, _, pert_acc = train_linear_classifier(embeddings[train_idx], pert_labels[train_idx], embeddings[val_idx], pert_labels[val_idx], n_pert, device, epochs=100)
+    batch_chance, pert_chance = 1.0 / n_batch, 1.0 / n_pert
+    return {
+        'config': {'samples': len(embeddings), 'embedding_dim': int(embeddings.shape[1]), 'num_batches': n_batch, 'num_perturbations': n_pert},
+        'batch_classifier': {'accuracy': float(batch_acc), 'chance': float(batch_chance), 'above_chance_ratio': float(batch_acc / batch_chance)},
+        'perturbation_classifier': {'accuracy': float(pert_acc), 'chance': float(pert_chance), 'above_chance_ratio': float(pert_acc / pert_chance)},
+        'invariance_ratio': float(pert_acc / batch_acc) if batch_acc > 0 else 0.0
+    }
+
+
 def _batch_invariance(ctx):
     '''Are representations confounded by batch effects?'''
     verbose = ctx.config['verbose']
@@ -526,10 +601,10 @@ def _batch_invariance(ctx):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(eval_seed)
 
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
-    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+    test_loader = EvalLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
+    test_steps = ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size']
 
-    all_emb, all_batch, all_pert = [], [], []
+    all_emb, all_batch, all_pert, all_ds_ids = [], [], [], []
     with torch.no_grad():
         for _ in tqdm(range(test_steps), desc='batch_invariance: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
@@ -537,25 +612,16 @@ def _batch_invariance(ctx):
             all_emb.append(ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy())
             all_batch.append(batch.batch_id.cpu().numpy())
             all_pert.append(batch.seq_idx[:, 0].cpu().numpy())
+            all_ds_ids.append(batch.dataset_id.cpu().numpy())
 
     embeddings = np.concatenate(all_emb, axis=0)
     batch_ids = np.concatenate(all_batch, axis=0).flatten()
     pert_ids = np.concatenate(all_pert, axis=0).flatten()
-
-    batch_map = {b: i for i, b in enumerate(sorted(np.unique(batch_ids)))}
-    pert_map = {p: i for i, p in enumerate(sorted(np.unique(pert_ids)))}
-    batch_labels = np.array([batch_map[b] for b in batch_ids])
-    pert_labels = np.array([pert_map[p] for p in pert_ids])
-
-    n_batch, n_pert = len(batch_map), len(pert_map)
-    train_idx, val_idx = train_test_split(np.arange(len(embeddings)), test_size=0.2, random_state=eval_seed)
+    dataset_ids = np.concatenate(all_ds_ids, axis=0).flatten()
 
     if verbose:
-        print('Training batch classifier...')
-    _, _, batch_acc = train_linear_classifier(embeddings[train_idx], batch_labels[train_idx], embeddings[val_idx], batch_labels[val_idx], n_batch, ctx.device, epochs=100)
-    if verbose:
-        print('Training perturbation classifier...')
-    _, _, pert_acc = train_linear_classifier(embeddings[train_idx], pert_labels[train_idx], embeddings[val_idx], pert_labels[val_idx], n_pert, ctx.device, epochs=100)
+        print('Training classifiers...')
+    result = _compute_batch_invariance(embeddings, batch_ids, pert_ids, ctx.device, eval_seed)
 
     random.setstate(rng_py)
     np.random.set_state(rng_np)
@@ -563,16 +629,21 @@ def _batch_invariance(ctx):
     if rng_cuda is not None:
         torch.cuda.set_rng_state(rng_cuda)
 
-    batch_chance, pert_chance = 1.0 / n_batch, 1.0 / n_pert
     if verbose:
-        print(f'batch_invariance: Batch={batch_acc:.4f} ({batch_acc/batch_chance:.1f}x), Pert={pert_acc:.4f} ({pert_acc/pert_chance:.1f}x)')
+        ba = result['batch_classifier']['accuracy']
+        pa = result['perturbation_classifier']['accuracy']
+        print(f'batch_invariance: Batch={ba:.4f} ({ba/result["batch_classifier"]["chance"]:.1f}x), Pert={pa:.4f} ({pa/result["perturbation_classifier"]["chance"]:.1f}x)')
 
-    return {
-        'config': {'samples': len(embeddings), 'embedding_dim': int(embeddings.shape[1]), 'num_batches': n_batch, 'num_perturbations': n_pert},
-        'batch_classifier': {'accuracy': float(batch_acc), 'chance': float(batch_chance), 'above_chance_ratio': float(batch_acc / batch_chance)},
-        'perturbation_classifier': {'accuracy': float(pert_acc), 'chance': float(pert_chance), 'above_chance_ratio': float(pert_acc / pert_chance)},
-        'invariance_ratio': float(pert_acc / batch_acc) if batch_acc > 0 else 0.0
-    }
+    by_dataset = {}
+    for ds_id, ds_name in test_loader.dataset_id_to_name.items():
+        mask = dataset_ids == ds_id
+        if mask.sum() < 200:
+            continue
+        ds_result = _compute_batch_invariance(embeddings[mask], batch_ids[mask], pert_ids[mask], ctx.device, eval_seed)
+        if ds_result is not None:
+            by_dataset[ds_name] = ds_result
+    result['by_dataset'] = by_dataset
+    return result
 
 
 def _gene_embedding_pathways(ctx):
@@ -661,8 +732,8 @@ def _essential_gene_prediction(ctx):
 def _cell_type_probing(ctx):
     '''Can cell type be predicted from cell embeddings?'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
-    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
+    test_steps = ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size']
 
     all_emb, all_cell_type, all_batch_id = [], [], []
     with torch.no_grad():
@@ -719,9 +790,9 @@ def _cell_type_probing(ctx):
 def _reconstruction(ctx):
     '''Can gene expression be reconstructed from embeddings?'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
-    recon_samples = min(ctx.config['test_total_examples'], 100)
-    test_steps = recon_samples // ctx.config['batch_size']
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
+    recon_samples = min(ctx.config.get('test_total_examples', test_loader.total_samples), 100)
+    test_steps = max(recon_samples // ctx.config['batch_size'], 1)
     n_genes = ctx.config['num_genes']
 
     all_emb, all_expr = [], []
@@ -786,13 +857,30 @@ def _reconstruction(ctx):
     }
 
 
+def _compute_perturbation_detection(control_emb, case_emb, device):
+    X = np.concatenate([control_emb, case_emb], axis=0)
+    y = np.concatenate([np.zeros(len(control_emb)), np.ones(len(case_emb))]).astype(int)
+    train_idx, val_idx = train_test_split(np.arange(len(X)), test_size=0.2, random_state=42, stratify=y)
+    classifier, val_preds, val_acc = train_linear_classifier(X[train_idx], y[train_idx], X[val_idx], y[val_idx], num_classes=2, device=device, epochs=100)
+    classifier.eval()
+    with torch.no_grad():
+        X_val_t = torch.from_numpy(X[val_idx]).float().to(device)
+        logits = classifier(X_val_t)
+        probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+    auroc = roc_auc_score(y[val_idx], probs)
+    return {
+        'config': {'n_control': len(control_emb), 'n_perturbed': len(case_emb), 'embedding_dim': int(control_emb.shape[1])},
+        'metrics': {'auroc': float(auroc), 'accuracy': float(val_acc), 'chance': 0.5}
+    }
+
+
 def _perturbation_detection(ctx):
     '''Can we distinguish perturbed cells from control cells?'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
-    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+    test_loader = EvalLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
+    test_steps = ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size']
 
-    control_emb, case_emb = [], []
+    control_emb, case_emb, all_ds_ids = [], [], []
     with torch.no_grad():
         for _ in tqdm(range(test_steps), desc='perturbation_detection: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
@@ -802,60 +890,33 @@ def _perturbation_detection(ctx):
             case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
             control_emb.append(ctrl_z)
             case_emb.append(case_z)
+            all_ds_ids.append(batch.dataset_id.cpu().numpy())
 
     control_emb = np.concatenate(control_emb, axis=0)
     case_emb = np.concatenate(case_emb, axis=0)
-
-    X = np.concatenate([control_emb, case_emb], axis=0)
-    y = np.concatenate([np.zeros(len(control_emb)), np.ones(len(case_emb))]).astype(int)
-
-    train_idx, val_idx = train_test_split(np.arange(len(X)), test_size=0.2, random_state=42, stratify=y)
+    dataset_ids = np.concatenate(all_ds_ids, axis=0).flatten()
 
     if verbose:
         print('Training perturbation detector...')
-    classifier, val_preds, val_acc = train_linear_classifier(X[train_idx], y[train_idx], X[val_idx], y[val_idx], num_classes=2, device=ctx.device, epochs=100)
-
-    classifier.eval()
-    with torch.no_grad():
-        X_val_t = torch.from_numpy(X[val_idx]).float().to(ctx.device)
-        logits = classifier(X_val_t)
-        probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
-
-    auroc = roc_auc_score(y[val_idx], probs)
-
+    result = _compute_perturbation_detection(control_emb, case_emb, ctx.device)
     if verbose:
-        print(f'perturbation_detection: AUROC={auroc:.4f}, Accuracy={val_acc:.4f}')
+        print(f'perturbation_detection: AUROC={result["metrics"]["auroc"]:.4f}, Accuracy={result["metrics"]["accuracy"]:.4f}')
 
-    return {
-        'config': {'n_control': len(control_emb), 'n_perturbed': len(case_emb), 'embedding_dim': int(control_emb.shape[1])},
-        'metrics': {'auroc': float(auroc), 'accuracy': float(val_acc), 'chance': 0.5}
-    }
+    by_dataset = {}
+    for ds_id, ds_name in test_loader.dataset_id_to_name.items():
+        mask = dataset_ids == ds_id
+        if mask.sum() < 200:
+            continue
+        by_dataset[ds_name] = _compute_perturbation_detection(control_emb[mask], case_emb[mask], ctx.device)
+    result['by_dataset'] = by_dataset
+    return result
 
 
-def _embedding_consistency(ctx):
-    '''Do replicates of the same perturbation cluster together?'''
-    verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
-    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
-
-    all_emb, all_pert = [], []
-    with torch.no_grad():
-        for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings', disable=not verbose):
-            batch = test_loader.next_batch()
-            case_x, case_tot = batch.case, batch.case_total
-            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
-            all_emb.append(case_z)
-            all_pert.append(batch.seq_idx[:, 0].cpu().numpy())
-
-    embeddings = np.concatenate(all_emb, axis=0)
-    pert_ids = np.concatenate(all_pert, axis=0).flatten()
-
+def _compute_embedding_consistency(embeddings, pert_ids):
     pert_to_emb = defaultdict(list)
     for i, pid in enumerate(pert_ids):
         pert_to_emb[pid].append(embeddings[i])
-
     valid_perts = {pid: np.array(embs) for pid, embs in pert_to_emb.items() if len(embs) >= 3}
-
     if len(valid_perts) < 10:
         return {'error': f'Not enough perturbations with >= 3 replicates (found {len(valid_perts)})'}
 
@@ -878,21 +939,56 @@ def _embedding_consistency(ctx):
 
     intra_mean, inter_mean = np.mean(intra_dists), np.mean(inter_dists)
     ratio = inter_mean / intra_mean if intra_mean > 0 else float('inf')
-
-    if verbose:
-        print(f'embedding_consistency: Intra={intra_mean:.4f}, Inter={inter_mean:.4f}, Ratio={ratio:.2f}x')
-
     return {
         'config': {'n_perturbations': len(valid_perts), 'n_intra_pairs': len(intra_dists), 'n_inter_pairs': len(inter_dists)},
         'metrics': {'mean_intra_distance': float(intra_mean), 'mean_inter_distance': float(inter_mean), 'inter_intra_ratio': float(ratio), 'std_intra_distance': float(np.std(intra_dists)), 'std_inter_distance': float(np.std(inter_dists))}
     }
 
 
+def _embedding_consistency(ctx):
+    '''Do replicates of the same perturbation cluster together?'''
+    verbose = ctx.config['verbose']
+    test_loader = EvalLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
+    test_steps = ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size']
+
+    all_emb, all_pert, all_ds_ids = [], [], []
+    with torch.no_grad():
+        for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings', disable=not verbose):
+            batch = test_loader.next_batch()
+            case_x, case_tot = batch.case, batch.case_total
+            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            all_emb.append(case_z)
+            all_pert.append(batch.seq_idx[:, 0].cpu().numpy())
+            all_ds_ids.append(batch.dataset_id.cpu().numpy())
+
+    embeddings = np.concatenate(all_emb, axis=0)
+    pert_ids = np.concatenate(all_pert, axis=0).flatten()
+    dataset_ids = np.concatenate(all_ds_ids, axis=0).flatten()
+
+    result = _compute_embedding_consistency(embeddings, pert_ids)
+    if verbose:
+        if 'error' not in result:
+            print(f'embedding_consistency: Intra={result["metrics"]["mean_intra_distance"]:.4f}, Inter={result["metrics"]["mean_inter_distance"]:.4f}, Ratio={result["metrics"]["inter_intra_ratio"]:.2f}x')
+        else:
+            print(f'embedding_consistency: {result["error"]}')
+
+    by_dataset = {}
+    for ds_id, ds_name in test_loader.dataset_id_to_name.items():
+        mask = dataset_ids == ds_id
+        if mask.sum() < 200:
+            continue
+        ds_result = _compute_embedding_consistency(embeddings[mask], pert_ids[mask])
+        if 'error' not in ds_result:
+            by_dataset[ds_name] = ds_result
+    result['by_dataset'] = by_dataset
+    return result
+
+
 def _latent_space_health(ctx):
     '''Diagnostic metrics for embedding quality.'''
     verbose = ctx.config['verbose']
-    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
-    test_steps = ctx.config['test_total_examples'] // ctx.config['batch_size']
+    test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
+    test_steps = ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size']
 
     all_emb = []
     with torch.no_grad():
@@ -941,22 +1037,17 @@ def _latent_space_health(ctx):
 # FULL MODEL EVALS
 # =============================================================================
 
-def _expression_prediction(ctx):
-    '''Can we predict gene expression after perturbation?'''
-    inf = ctx.test_inference
+def _compute_expression_prediction(inf, n_genes):
     pert_keys = inf['pert_keys']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
     mean_pred_abs, mean_real_abs = inf['mean_pred_abs'], inf['mean_real_abs']
     sample_mses, sample_correlations = inf['sample_mses'], inf['sample_correlations']
-    n_genes = ctx.config['num_genes']
 
     TOP_K = 50
     per_pert_r2_all, per_pert_r2_top50, per_pert_mse = [], [], []
-
     for key in pert_keys:
         pred_abs, real_abs = mean_pred_abs[key], mean_real_abs[key]
         pred_delta, real_delta = mean_pred_deltas[key], mean_real_deltas[key]
-
         if np.std(real_abs) > 1e-9:
             per_pert_r2_all.append(r2_score(real_abs, pred_abs))
         top_k_idx = np.argsort(np.abs(real_delta))[-TOP_K:]
@@ -974,7 +1065,6 @@ def _expression_prediction(ctx):
     all_pred = np.concatenate([mean_pred_deltas[k] for k in pert_keys])
     all_real = np.concatenate([mean_real_deltas[k] for k in pert_keys])
     all_errors, all_magnitudes = all_pred - all_real, np.abs(all_real)
-
     magnitude_bins = [0, 0.25, 0.5, 1.0, 1.5, 2.0, np.inf]
     bin_labels = ['0-0.25', '0.25-0.5', '0.5-1.0', '1.0-1.5', '1.5-2.0', '2.0+']
     error_by_magnitude = {}
@@ -982,8 +1072,6 @@ def _expression_prediction(ctx):
         mask = (all_magnitudes >= magnitude_bins[i]) & (all_magnitudes < magnitude_bins[i + 1])
         if mask.sum() > 0:
             error_by_magnitude[bin_labels[i]] = {'mae': float(np.mean(np.abs(all_errors[mask]))), 'count': int(mask.sum())}
-
-    print(f'expression_prediction: MSE={np.mean(sample_mses):.4f}, R2_all={per_pert_r2_all.mean():.4f}')
 
     return {
         'config': {'test_perturbations': len(pert_keys), 'genes': n_genes, 'test_samples': len(sample_mses)},
@@ -998,21 +1086,45 @@ def _expression_prediction(ctx):
     }
 
 
-def _gene_level_analysis(ctx, direction_threshold=0.25):
-    '''Direction of effect + top DEG recovery analysis.'''
+def _expression_prediction(ctx):
+    '''Can we predict gene expression after perturbation?'''
     inf = ctx.test_inference
+    n_genes = ctx.config['num_genes']
+    result = _compute_expression_prediction(inf, n_genes)
+    print(f'expression_prediction: MSE={result["sample_level"]["mse"]:.4f}, R2_all={result["perturbation_level"]["r2_all_genes"]["mean"]:.4f}')
+    by_dataset = {}
+    for ds, ds_inf in inf.get('by_dataset', {}).items():
+        if len(ds_inf.get('pert_keys', [])) > 0:
+            by_dataset[ds] = _compute_expression_prediction(ds_inf, n_genes)
+    result['by_dataset'] = by_dataset
+    return result
+
+
+def _classify_direction(delta, threshold):
+    direction = np.zeros_like(delta, dtype=np.int8)
+    direction[delta >= threshold] = 1
+    direction[delta <= -threshold] = -1
+    return direction
+
+
+def _precision_at_k(pred_rank, true_rank, k):
+    return len(set(pred_rank[:k]) & set(true_rank[:k])) / k
+
+
+def _ndcg_at_k(pred_rank, true_rank, k):
+    true_set = set(true_rank[:k])
+    rels = [1 if g in true_set else 0 for g in pred_rank[:k]]
+    dcg = sum(r / np.log2(i + 2) for i, r in enumerate(rels))
+    idcg = sum(1 / np.log2(i + 2) for i in range(min(k, len(true_set))))
+    return dcg / idcg if idcg > 0 else 0.0
+
+
+def _compute_gene_level_analysis(inf, n_genes, direction_threshold):
     pert_keys = inf['pert_keys']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
-    n_genes = ctx.config['num_genes']
 
-    def classify_direction(delta, threshold=direction_threshold):
-        direction = np.zeros_like(delta, dtype=np.int8)
-        direction[delta >= threshold] = 1
-        direction[delta <= -threshold] = -1
-        return direction
-
-    all_pred_dir = np.concatenate([classify_direction(mean_pred_deltas[k]) for k in pert_keys])
-    all_real_dir = np.concatenate([classify_direction(mean_real_deltas[k]) for k in pert_keys])
+    all_pred_dir = np.concatenate([_classify_direction(mean_pred_deltas[k], direction_threshold) for k in pert_keys])
+    all_real_dir = np.concatenate([_classify_direction(mean_real_deltas[k], direction_threshold) for k in pert_keys])
     overall_accuracy = accuracy_score(all_real_dir, all_pred_dir)
     f1_up = f1_score(all_real_dir, all_pred_dir, labels=[1], average='macro', zero_division=0)
     f1_down = f1_score(all_real_dir, all_pred_dir, labels=[-1], average='macro', zero_division=0)
@@ -1022,15 +1134,15 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     top_deg_pred, top_deg_real = [], []
     for key in pert_keys:
         top_k_idx = np.argsort(np.abs(mean_real_deltas[key]))[-TOP_K_DIR:]
-        top_deg_pred.append(classify_direction(mean_pred_deltas[key][top_k_idx]))
-        top_deg_real.append(classify_direction(mean_real_deltas[key][top_k_idx]))
+        top_deg_pred.append(_classify_direction(mean_pred_deltas[key][top_k_idx], direction_threshold))
+        top_deg_real.append(_classify_direction(mean_real_deltas[key][top_k_idx], direction_threshold))
     top_deg_accuracy = accuracy_score(np.concatenate(top_deg_real), np.concatenate(top_deg_pred))
 
     all_magnitudes, all_correct = [], []
     for key in pert_keys:
         real_delta, pred_delta = mean_real_deltas[key], mean_pred_deltas[key]
         all_magnitudes.extend(np.abs(real_delta))
-        all_correct.extend(classify_direction(pred_delta) == classify_direction(real_delta))
+        all_correct.extend(_classify_direction(pred_delta, direction_threshold) == _classify_direction(real_delta, direction_threshold))
     all_magnitudes, all_correct = np.array(all_magnitudes), np.array(all_correct)
 
     magnitude_bins = [0, 0.25, 0.5, 1.0, 1.5, 2.0, np.inf]
@@ -1041,33 +1153,35 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
         if mask.sum() > 0:
             accuracy_by_magnitude[bin_labels[i]] = {'accuracy': float(all_correct[mask].mean()), 'count': int(mask.sum())}
 
-    def precision_at_k(pred_rank, true_rank, k):
-        return len(set(pred_rank[:k]) & set(true_rank[:k])) / k
-
-    def ndcg_at_k(pred_rank, true_rank, k):
-        true_set = set(true_rank[:k])
-        rels = [1 if g in true_set else 0 for g in pred_rank[:k]]
-        dcg = sum(r / np.log2(i + 2) for i, r in enumerate(rels))
-        idcg = sum(1 / np.log2(i + 2) for i in range(min(k, len(true_set))))
-        return dcg / idcg if idcg > 0 else 0.0
-
     K_VALUES = [10, 20, 50, 100]
     deg_results = {k: {'precision': [], 'ndcg': [], 'overlap': []} for k in K_VALUES}
     for key in pert_keys:
         pred_rank = np.argsort(np.abs(mean_pred_deltas[key]))[::-1]
         true_rank = np.argsort(np.abs(mean_real_deltas[key]))[::-1]
         for k in K_VALUES:
-            deg_results[k]['precision'].append(precision_at_k(pred_rank, true_rank, k))
-            deg_results[k]['ndcg'].append(ndcg_at_k(pred_rank, true_rank, k))
+            deg_results[k]['precision'].append(_precision_at_k(pred_rank, true_rank, k))
+            deg_results[k]['ndcg'].append(_ndcg_at_k(pred_rank, true_rank, k))
             deg_results[k]['overlap'].append(len(set(pred_rank[:k]) & set(true_rank[:k])))
-
-    print(f'gene_level_analysis: Dir_acc={overall_accuracy:.4f}, Top50_acc={top_deg_accuracy:.4f}')
 
     return {
         'config': {'test_perturbations': len(pert_keys), 'genes': n_genes, 'direction_threshold': direction_threshold},
         'direction_of_effect': {'all_genes_accuracy': float(overall_accuracy), 'top50_degs_accuracy': float(top_deg_accuracy), 'f1_up': float(f1_up), 'f1_down': float(f1_down), 'f1_unchanged': float(f1_unchanged), 'accuracy_by_magnitude': accuracy_by_magnitude},
         'top_deg_recovery': {str(k): {'precision': float(np.mean(deg_results[k]['precision'])), 'ndcg': float(np.mean(deg_results[k]['ndcg'])), 'overlap': float(np.mean(deg_results[k]['overlap'])), 'vs_random': float(np.mean(deg_results[k]['overlap']) / (k * k / n_genes))} for k in K_VALUES}
     }
+
+
+def _gene_level_analysis(ctx, direction_threshold=0.25):
+    '''Direction of effect + top DEG recovery analysis.'''
+    inf = ctx.test_inference
+    n_genes = ctx.config['num_genes']
+    result = _compute_gene_level_analysis(inf, n_genes, direction_threshold)
+    print(f'gene_level_analysis: Dir_acc={result["direction_of_effect"]["all_genes_accuracy"]:.4f}, Top50_acc={result["direction_of_effect"]["top50_degs_accuracy"]:.4f}')
+    by_dataset = {}
+    for ds, ds_inf in inf.get('by_dataset', {}).items():
+        if len(ds_inf.get('pert_keys', [])) > 0:
+            by_dataset[ds] = _compute_gene_level_analysis(ds_inf, n_genes, direction_threshold)
+    result['by_dataset'] = by_dataset
+    return result
 
 
 def _perturbation_retrieval(ctx, n_eval=100):
@@ -1171,9 +1285,7 @@ def _perturbation_retrieval(ctx, n_eval=100):
     return {'by_type': results_by_type}
 
 
-def _uncertainty_calibration(ctx, n_bins=10):
-    '''Are confidence estimates meaningful?'''
-    inf = ctx.test_inference
+def _compute_uncertainty_calibration(inf, n_bins):
     pred_deltas = inf['sample_pred_deltas']
     real_deltas = inf['sample_real_deltas']
     sample_logvars = inf['sample_logvars']
@@ -1219,14 +1331,25 @@ def _uncertainty_calibration(ctx, n_bins=10):
     pert_pearson, _ = pearsonr(pert_unc_arr, pert_err_arr)
     pert_spearman, _ = spearmanr(pert_unc_arr, pert_err_arr)
 
-    print(f'uncertainty_calibration: ECE={ece:.4f}, Monotonicity={monotonicity:.2%}')
-
     return {
         'config': {'samples': len(sample_mse), 'perturbations': len(pert_unc)},
         'sample_level': {'uncertainty_error_pearson': float(pearson_r), 'uncertainty_error_spearman': float(spearman_r), 'expected_calibration_error': float(ece), 'monotonicity_score': float(monotonicity)},
         'perturbation_level': {'uncertainty_error_pearson': float(pert_pearson), 'uncertainty_error_spearman': float(pert_spearman)},
         'bin_analysis': {'n_bins': n_bins, 'bin_mean_errors': [float(e) for e in bin_mean_error]}
     }
+
+
+def _uncertainty_calibration(ctx, n_bins=10):
+    '''Are confidence estimates meaningful?'''
+    inf = ctx.test_inference
+    result = _compute_uncertainty_calibration(inf, n_bins)
+    print(f'uncertainty_calibration: ECE={result["sample_level"]["expected_calibration_error"]:.4f}, Monotonicity={result["sample_level"]["monotonicity_score"]:.2%}')
+    by_dataset = {}
+    for ds, ds_inf in inf.get('by_dataset', {}).items():
+        if len(ds_inf.get('sample_pred_deltas', [])) > 0:
+            by_dataset[ds] = _compute_uncertainty_calibration(ds_inf, n_bins)
+    result['by_dataset'] = by_dataset
+    return result
 
 
 def _action_vector_pathways(ctx):
@@ -1769,11 +1892,11 @@ def _multi_pert_alignment(ctx):
     target_bank = ctx.target_bank
 
     try:
-        test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device)
+        test_loader = TrainingLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
     except RuntimeError as e:
         return {'error': f'Could not load test shards: {e}. Run data_prep_03_shards.ipynb first.'}
 
-    test_steps = min(500, ctx.config['test_total_examples'] // ctx.config['batch_size'])
+    test_steps = min(500, ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size'])
     single_pert_samples, multi_pert_samples = [], []
 
     for _ in tqdm(range(test_steps), desc='multi_pert_alignment: Scanning for multi-pert'):
