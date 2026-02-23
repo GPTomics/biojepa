@@ -470,7 +470,7 @@ class EvalContext:
         ds_sample_mses, ds_sample_correlations = defaultdict(list), defaultdict(list)
         ct_sample_mses, ct_sample_correlations = defaultdict(list), defaultdict(list)
 
-        for _ in tqdm(range(test_steps), desc='Running test inference'):
+        for _ in tqdm(range(test_steps), desc='Running test inference', disable=not self.config.get('verbose', True)):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             case_x, case_tot = batch.case, batch.case_total
@@ -1083,7 +1083,7 @@ def _perturbation_detection(ctx):
     return result
 
 
-def _compute_embedding_consistency(embeddings, pert_ids):
+def _compute_embedding_consistency(embeddings, pert_ids, label='', verbose=False):
     pert_to_emb = defaultdict(list)
     for i, pid in enumerate(pert_ids):
         pert_to_emb[pid].append(embeddings[i])
@@ -1091,22 +1091,22 @@ def _compute_embedding_consistency(embeddings, pert_ids):
     if len(valid_perts) < 10:
         return {'error': f'Not enough perturbations with >= 3 replicates (found {len(valid_perts)})'}
 
-    intra_dists = []
-    for pid, embs in valid_perts.items():
-        n = len(embs)
-        for i in range(n):
-            for j in range(i + 1, n):
-                intra_dists.append(np.linalg.norm(embs[i] - embs[j]))
+    prefix = f'embedding_consistency{label}'
+    if verbose:
+        print(f'{prefix}: Computing intra-distances for {len(valid_perts)} perturbations...')
+    intra_dists = np.concatenate([pdist(embs) for embs in valid_perts.values()])
 
     pert_list = list(valid_perts.keys())
-    inter_dists = []
     n_samples = min(5000, len(pert_list) * (len(pert_list) - 1) // 2)
+    if verbose:
+        print(f'{prefix}: Computing {n_samples} inter-distances...')
     rng = np.random.RandomState(42)
+    e1_list, e2_list = [], []
     for _ in range(n_samples):
         p1, p2 = rng.choice(pert_list, 2, replace=False)
-        e1 = valid_perts[p1][rng.randint(len(valid_perts[p1]))]
-        e2 = valid_perts[p2][rng.randint(len(valid_perts[p2]))]
-        inter_dists.append(np.linalg.norm(e1 - e2))
+        e1_list.append(valid_perts[p1][rng.randint(len(valid_perts[p1]))])
+        e2_list.append(valid_perts[p2][rng.randint(len(valid_perts[p2]))])
+    inter_dists = np.linalg.norm(np.array(e1_list) - np.array(e2_list), axis=1)
 
     intra_mean, inter_mean = np.mean(intra_dists), np.mean(inter_dists)
     ratio = inter_mean / intra_mean if intra_mean > 0 else float('inf')
@@ -1136,7 +1136,7 @@ def _embedding_consistency(ctx):
     pert_ids = np.concatenate(all_pert, axis=0).flatten()
     dataset_ids = np.concatenate(all_ds_ids, axis=0).flatten()
 
-    result = _compute_embedding_consistency(embeddings, pert_ids)
+    result = _compute_embedding_consistency(embeddings, pert_ids, verbose=verbose)
     if verbose:
         if 'error' not in result:
             print(f'embedding_consistency: Intra={result["metrics"]["mean_intra_distance"]:.4f}, Inter={result["metrics"]["mean_inter_distance"]:.4f}, Ratio={result["metrics"]["inter_intra_ratio"]:.2f}x')
@@ -1148,6 +1148,8 @@ def _embedding_consistency(ctx):
         mask = dataset_ids == ds_id
         if mask.sum() < 200:
             continue
+        if verbose:
+            print(f'embedding_consistency: Computing for dataset {ds_name}...')
         ds_result = _compute_embedding_consistency(embeddings[mask], pert_ids[mask])
         if 'error' not in ds_result:
             by_dataset[ds_name] = ds_result
@@ -1552,7 +1554,7 @@ def _perturbation_retrieval(ctx, n_eval=100):
             continue
 
         ranks = []
-        for key in tqdm(eval_keys, desc=f'perturbation_retrieval ({bank_name})'):
+        for key in tqdm(eval_keys, desc=f'perturbation_retrieval ({bank_name})', disable=not ctx.config.get('verbose', True)):
             lookup_idx = key[idx_pos]
             if lookup_idx < 0 or lookup_idx >= n_bank:
                 continue
@@ -2277,7 +2279,7 @@ def _mode_sensitivity(ctx):
     mode_list = list(ALL_MODES.keys())
     for i, m1 in enumerate(mode_list):
         for m2 in mode_list[i+1:]:
-            dists = [np.linalg.norm(mode_actions[m1][j] - mode_actions[m2][j]) for j in range(n_sample)]
+            dists = np.linalg.norm(mode_actions[m1] - mode_actions[m2], axis=1)
             pairwise_distances[f'{m1}_vs_{m2}'] = {'mean': float(np.mean(dists)), 'std': float(np.std(dists))}
 
     all_actions = np.concatenate([mode_actions[m] for m in ALL_MODES.keys()], axis=0)
@@ -2466,7 +2468,7 @@ def _multi_pert_alignment(ctx):
     test_steps = min(500, ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size'])
     single_pert_samples, multi_pert_samples = [], []
 
-    for _ in tqdm(range(test_steps), desc='multi_pert_alignment: Scanning for multi-pert'):
+    for _ in tqdm(range(test_steps), desc='multi_pert_alignment: Scanning for multi-pert', disable=not ctx.config.get('verbose', True)):
         batch = test_loader.next_batch()
         for i in range(batch.n_perts.shape[0]):
             n = int(batch.n_perts[i].item())
