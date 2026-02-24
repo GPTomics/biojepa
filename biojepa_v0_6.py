@@ -373,7 +373,7 @@ class CellStateEncoder(nn.Module):
         self.gene_embeddings = nn.Parameter(torch.randn(config.num_genes, config.embed_dim) * 0.02)
 
         # Expression Value Representation
-        self.linear_scaler = nn.Linear(1, 1, bias=False)
+        self.expr_scaler = nn.Linear(1, 1, bias=False)
         self.fourier_input_scaler = nn.Linear(1, 1, bias=False)
         self.fourier_projection = GaussianFourierProjection(config)
         self.film_generator = nn.Sequential(
@@ -392,7 +392,7 @@ class CellStateEncoder(nn.Module):
         self.ln_f = RMSNorm(config.embed_dim)
 
         self.apply(init_weights_robust)
-        nn.init.constant_(self.linear_scaler.weight, config.film_linear_multiple)
+        nn.init.constant_(self.expr_scaler.weight, config.film_linear_multiple)
         nn.init.constant_(self.fourier_input_scaler.weight, 0.1)
         nn.init.zeros_(self.film_generator[-1].weight)
         nn.init.zeros_(self.film_generator[-1].bias)
@@ -401,7 +401,7 @@ class CellStateEncoder(nn.Module):
         # 1. Project Genes
         x = x_values.unsqueeze(-1)
 
-        scaled_x = self.linear_scaler(x)
+        scaled_x = self.expr_scaler(x)
         scaled_x = self.gene_embeddings.unsqueeze(0) * scaled_x
 
         fourier_x = self.fourier_input_scaler(x)
