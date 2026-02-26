@@ -2,9 +2,45 @@
 
 
 
-
-
 # BioJEPA-AC v0.6 - A world model for cells
+
+## Evals
+
+### Action Conditioned Predictor
+
+BioJEPA-AC primary benefit is not creating the joint-embedding space, but being able to take actions, in our case perturbations, and move representations in that embedding space.   To evaluate if our latent space and understanding of moving representations across it are useful, we use a series of evals both directly on the latent space, and with lightweight decoder heads.  
+
+![full_model_overview](/Users/djemec/code/biojepa_unified/biojepa/resources/v0_6/ac_eval.png)
+
+*Fig X. Forward pass of our action conditioned network*
+
+To do the evals, we take a control cell state, add up to four perturbation representations, and then do a forward pass on our BioJEPA-AC model.  This generates a representation of the perturbed cell state, after which we pass that to the task eval.   We have 8 different evals that we do on our fully trained model. 
+
+#### Expression Prediction
+
+The main goal of this eval is to see if we can predit post perturbation gene expression.  This eval is useful as a high accuracy in gene expression can lead to an explainable understanding on perturbation effects for viability and gene network impact. In v0.6 we're focusing on 10,000 genes. Since we're covering almost half of the known genes, many of the genes will not have signficant changes. This means that we have to be careful to not evaluate just the whole gene set as predicting no change can be highly accurate for most genes.   To avoid falling into this trap, we run a number of different analyses including focusing on the top 20 and top 50 differentially expressed genes allowing us to see if the model is able to predict the largest movement vs just the housekeeping genes.  
+
+#### Gene Level Analysis
+
+#### Perturbation Retrieval
+
+#### Uncertainty Calibration
+
+#### Action Vector Pathway
+
+#### Mechanism of Action Matching
+
+#### Combination Perturbation Impact
+
+#### Dose Response
+
+
+
+
+
+
+
+
 
 ## Abstract
 
