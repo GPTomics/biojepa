@@ -10,7 +10,7 @@
 
 BioJEPA-AC primary benefit is not creating the joint-embedding space, but being able to take actions, in our case perturbations, and move representations in that embedding space.   To evaluate if our latent space and understanding of moving representations across it are useful, we use a series of evals both directly on the latent space, and with lightweight decoder heads.  
 
-![full_model_overview](/Users/djemec/code/biojepa_unified/biojepa/resources/v0_6/ac_eval.png)
+![full_model_overview](../resources/v0_6/ac_eval.png)
 
 *Fig X. Forward pass of our action conditioned network*
 
