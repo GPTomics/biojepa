@@ -18,9 +18,19 @@ To do the evals, we take a control cell state, add up to four perturbation repre
 
 ### Eval Heads
 
+The BioJEPA-AC model is an encoder meaning its output is an embedding representation, not a specific molecular representation or property.  While this is what allows us to do energy-based learning, it makes it difficult to know how bilogically valuable the model is as a foundation model, something done with our evals.  To complete the evals we need to add a decoder head on top, but, we need to ensure the evals are not so intelligent/capable that they mask issues in our base model.  To avoid this, our heads use a single learnable liear layer to project our latent representations to the appropriate eval dimensions.  This results in 2 different heads: a linear expression decoder and a linear classifier.
+
+![eval decoder overview](../resources/v0_6/eval_decoder_overview.png)
+
+*Fig X. An overview of the different heads, an expression predictor and a general linear classifier, we use to conduct evaluation benchmarking on our BioJEPA-AC model*
+
 #### Linear Expression Decoder
 
-#### Linear Classifier
+Since our cell state learning data is perturbSeq, we have a lot of gene expression information in our model. Because of this, one of our main benchmarks will be to see how well we can predict perturbation based changes in expression. For our model to do this, we'll have to project from our latent space down to a single value per gene.  Since our cell state latent representation is already $[\text{n\_genes}, \text{embed\_dim}]$, this decoder will use its single linear layer to convert its latent representation to a single value per gene. Recall that our model generates both a mean and logvar representation but you'll see that our linear expression prediction only takes in a single input. As you'll see in the eval deep dive, we use the mean for our expression prediction and reserve the logvar for error analysis. 
+
+#### General Linear Classifier
+
+Another common eval we perform both on our cell latent, and on our intermediate modules is predicting different input metadata and classes (e.g. cell batch information, cell types, if a cell is perturbed, perturbation modes, perturbation pathways).  Both our BioJEPA-AC model and the components all are encoders so we have to build a classifier that can predict the class based on the latent representation.  Given we use it in multiple evals, we built a general purpose classifier class.  This class takes in the latent representation and, with a single linear later, projects it to the class dimension. This linear calcualtion createa a value per class that represents its probabilities.  In some cases like classifier a cell latent to a cell type, we do an additional step of mean pooling. We do this since the classifier will generate a class prediction per gene and we need to collapse it down to per cell without givint he model more intelligence. As you'll see in the eval deep dives, the classifier leaves the values in their raw state since our deifferent evals will subprocess the data in different manners.  
 
 ### Full Model Evals
 
