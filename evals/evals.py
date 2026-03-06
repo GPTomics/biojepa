@@ -499,6 +499,7 @@ class EvalContext:
             p_idx_np = batch.seq_idx[:, 0].cpu().numpy()
             p_target_np = batch.target_idx[:, 0].cpu().numpy()
             p_mod_np = batch.modality[:, 0].cpu().numpy()
+            p_mode_np = batch.mode[:, 0].cpu().numpy()
             cont_x_np = cont_x.cpu().numpy()
             ds_id_np = batch.dataset_id.cpu().numpy()
             n_perts_np = batch.n_perts.cpu().numpy()
@@ -527,7 +528,7 @@ class EvalContext:
             sample_dataset_ids.append(ds_id_np)
 
             for i in range(B):
-                key = (int(p_idx_np[i]), int(p_target_np[i]), int(p_mod_np[i]))
+                key = (int(p_idx_np[i]), int(p_target_np[i]), int(p_mod_np[i]), int(p_mode_np[i]), int(cell_type_np[i]))
                 bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
 
                 sample_mse = float(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
@@ -1122,19 +1123,28 @@ def _embedding_consistency(ctx):
     test_loader = EvalLoader(batch_size=ctx.config['batch_size'], split=ctx.config.get('eval_split', 'test'), data_dir=ctx.paths['train_dir'], device=ctx.device, seed=ctx.config.get('seed', 1337))
     test_steps = ctx.config.get('test_total_examples', test_loader.total_samples) // ctx.config['batch_size']
 
-    all_emb, all_pert, all_ds_ids = [], [], []
+    all_emb, all_seq, all_target, all_mod, all_mode, all_ct, all_ds_ids = [], [], [], [], [], [], []
     with torch.no_grad():
         for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             case_x, case_tot = batch.case, batch.case_total
             case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
             all_emb.append(case_z)
-            all_pert.append(batch.seq_idx[:, 0].cpu().numpy())
+            all_seq.append(batch.seq_idx[:, 0].cpu().numpy())
+            all_target.append(batch.target_idx[:, 0].cpu().numpy())
+            all_mod.append(batch.modality[:, 0].cpu().numpy())
+            all_mode.append(batch.mode[:, 0].cpu().numpy())
+            all_ct.append(batch.cell_type.cpu().numpy())
             all_ds_ids.append(batch.dataset_id.cpu().numpy())
 
     embeddings = np.concatenate(all_emb, axis=0)
-    pert_ids = np.concatenate(all_pert, axis=0).flatten()
+    seq_ids = np.concatenate(all_seq, axis=0)
+    target_ids = np.concatenate(all_target, axis=0)
+    mod_ids = np.concatenate(all_mod, axis=0)
+    mode_ids = np.concatenate(all_mode, axis=0)
+    ct_ids = np.concatenate(all_ct, axis=0)
     dataset_ids = np.concatenate(all_ds_ids, axis=0).flatten()
+    pert_ids = [(int(seq_ids[i]), int(target_ids[i]), int(mod_ids[i]), int(mode_ids[i]), int(ct_ids[i])) for i in range(len(seq_ids))]
 
     result = _compute_embedding_consistency(embeddings, pert_ids, verbose=verbose)
     if verbose:
@@ -1150,7 +1160,7 @@ def _embedding_consistency(ctx):
             continue
         if verbose:
             print(f'embedding_consistency: Computing for dataset {ds_name}...')
-        ds_result = _compute_embedding_consistency(embeddings[mask], pert_ids[mask])
+        ds_result = _compute_embedding_consistency(embeddings[mask], [pert_ids[i] for i in np.where(mask)[0]])
         if 'error' not in ds_result:
             by_dataset[ds_name] = ds_result
     result['by_dataset'] = by_dataset
@@ -1586,6 +1596,8 @@ def _compute_uncertainty_calibration(inf, n_bins):
     pert_ids = inf['sample_pert_ids']
     target_ids = inf['sample_target_ids']
     pert_mods = inf['sample_pert_mods']
+    pert_modes = inf['sample_all_mode'][:, 0] if 'sample_all_mode' in inf else np.zeros(len(pert_ids), dtype=int)
+    cell_types = inf['sample_cell_types'] if 'sample_cell_types' in inf else np.zeros(len(pert_ids), dtype=int)
 
     sample_mse = np.mean((pred_deltas - real_deltas)**2, axis=1)
     sample_unc = sample_logvars.mean(axis=1)
@@ -1627,7 +1639,7 @@ def _compute_uncertainty_calibration(inf, n_bins):
 
     pert_groups = defaultdict(list)
     for i in range(len(pert_ids)):
-        key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]))
+        key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]), int(pert_modes[i]), int(cell_types[i]))
         pert_groups[key].append(i)
 
     pert_unc_arr = np.array([np.mean(sample_unc[pert_groups[p]]) for p in pert_groups])
@@ -1680,6 +1692,8 @@ def _uncertainty_calibration(ctx, n_bins=10):
                 'sample_pert_ids': inf['sample_pert_ids'][mask],
                 'sample_target_ids': inf['sample_target_ids'][mask],
                 'sample_pert_mods': inf['sample_pert_mods'][mask],
+                'sample_all_mode': inf['sample_all_mode'][mask],
+                'sample_cell_types': inf['sample_cell_types'][mask],
             }
             by_dataset[ds_name] = _compute_uncertainty_calibration(ds_inf, n_bins)
     result['by_dataset'] = by_dataset
@@ -1882,7 +1896,7 @@ def _combination_perturbation(ctx):
     combo_keys = set()
     for i in range(len(n_perts_all)):
         if n_perts_all[i] > 1:
-            key = (int(inf['sample_pert_ids'][i]), int(inf['sample_target_ids'][i]), int(inf['sample_pert_mods'][i]))
+            key = (int(inf['sample_pert_ids'][i]), int(inf['sample_target_ids'][i]), int(inf['sample_pert_mods'][i]), int(inf['sample_all_mode'][i, 0]), int(inf['sample_cell_types'][i]))
             combo_keys.add(key)
 
     combo_inf = {
@@ -2001,11 +2015,13 @@ def _dose_response(ctx):
     pert_ids = inf['sample_pert_ids'][sciplex_mask][valid_dose_mask]
     target_ids = inf['sample_target_ids'][sciplex_mask][valid_dose_mask]
     pert_mods = inf['sample_pert_mods'][sciplex_mask][valid_dose_mask]
+    pert_modes = inf['sample_all_mode'][sciplex_mask][valid_dose_mask][:, 0]
+    cell_types = inf['sample_cell_types'][sciplex_mask][valid_dose_mask]
     valid_doses = slot0_dose[valid_dose_mask]
 
     drug_dose_severity = defaultdict(list)
     for i in range(len(valid_doses)):
-        key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]))
+        key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]), int(pert_modes[i]), int(cell_types[i]))
         severity = float(np.linalg.norm(pred_deltas[i]))
         drug_dose_severity[key].append((float(valid_doses[i]), severity))
 
