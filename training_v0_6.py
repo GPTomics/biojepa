@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -267,11 +268,11 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
         p.requires_grad = False
     for p in model.composer.parameters():
         p.requires_grad = True
+    model.composer.log_temperature.data.fill_(math.log(cfg.temperature))
+    model.composer.log_temperature.requires_grad = True
 
     optimizer = torch.optim.AdamW(model.composer.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05
-    )
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05)
 
     loss_history = []
     model.train()
@@ -320,7 +321,8 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
         loss_history.append(loss.item())
 
         if step % 100 == 0:
-            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
+            temp = model.composer.log_temperature.exp().item()
+            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e} | Temp: {temp:.4f}')
 
         if last_step:
             torch.save({
@@ -330,6 +332,13 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
             }, checkpoint_dir / f'biojepa_v0_6_align_final.pt')
 
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
+
+
+def get_mask_ratio(step, base_mask_ratio, anneal_start_step, max_steps, floor=0.1):
+    if step < anneal_start_step:
+        return base_mask_ratio
+    progress = (step - anneal_start_step) / max(1, max_steps - 1 - anneal_start_step)
+    return base_mask_ratio + (floor - base_mask_ratio) * progress
 
 
 def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: FullTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False) -> dict:
@@ -364,12 +373,22 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         optimizer, max_lr=[cfg.predictor_lr, cfg.predictor_lr * 0.1], total_steps=max_steps, pct_start=0.05
     )
 
+    base_mask_ratio = model.config.mask_ratio
+    total_epochs = max_steps // steps_per_epoch
+    if cfg.mask_anneal_pct > 0:
+        anneal_epochs = max(1, int(total_epochs * cfg.mask_anneal_pct))
+        anneal_start_step = (total_epochs - anneal_epochs) * steps_per_epoch
+    else:
+        anneal_start_step = max_steps
+    print(f'Mask annealing: starts at step {anneal_start_step} ({base_mask_ratio:.3f} -> 0.1)')
+
     loss_history = []
     total_epoch_loss = 0
     model.train()
 
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
+        current_mask_ratio = get_mask_ratio(step, base_mask_ratio, anneal_start_step, max_steps)
 
         if step % 500 == 0 or last_step:
             model.eval()
@@ -385,7 +404,8 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
 
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
                         val_loss = model(b.control, b.control_total, b.case, b.case_total,
-                                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
+                                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
+                                         mask_ratio=current_mask_ratio)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
@@ -409,7 +429,8 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         optimizer.zero_grad()
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
             loss = model(b.control, b.control_total, b.case, b.case_total,
-                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
+                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
+                         mask_ratio=current_mask_ratio)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -422,8 +443,9 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
 
         if step > 0 and (step + 1) % steps_per_epoch == 0:
+            epoch = (step + 1) // steps_per_epoch
             avg_loss = total_epoch_loss / steps_per_epoch
-            print(f'=== Epoch {(step + 1) // steps_per_epoch} Done. Avg Loss: {avg_loss:.5f} ===')
+            print(f'=== Epoch {epoch} Done. Avg Loss: {avg_loss:.5f} | Mask: {current_mask_ratio:.3f} ===')
             total_epoch_loss = 0
 
         if last_step:

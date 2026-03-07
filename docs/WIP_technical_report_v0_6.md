@@ -32,15 +32,93 @@ Since our cell state learning data is perturbSeq, we have a lot of gene expressi
 
 Another common eval we perform both on our cell latent, and on our intermediate modules is predicting different input metadata and classes (e.g. cell batch information, cell types, if a cell is perturbed, perturbation modes, perturbation pathways).  Both our BioJEPA-AC model and the components all are encoders so we have to build a classifier that can predict the class based on the latent representation.  Given we use it in multiple evals, we built a general purpose classifier class.  This class takes in the latent representation and, with a single linear later, projects it to the class dimension. This linear calcualtion createa a value per class that represents its probabilities.  In some cases like classifier a cell latent to a cell type, we do an additional step of mean pooling. We do this since the classifier will generate a class prediction per gene and we need to collapse it down to per cell without givint he model more intelligence. As you'll see in the eval deep dives, the classifier leaves the values in their raw state since our deifferent evals will subprocess the data in different manners.  
 
+### Eval Data Splits - Hold Out 
+
+To create our hold-out datasets, we followed an 85% / 5%/ 10% split between Train, Val, Test.  Before we applied this logic, we first used the [GEARS python package](https://github.com/snap-stanford/GEARS/tree/master) to identify the heldout Train, Val, Test split for Replogle K562-essential. This dataset uses a 67.5%,  7.5%, 25.0% train, val test split that we started with.  The split identifies unique perturbation to hold out.  With this as the start, we built a hold-out perturbation list that ensured we hit the 15% held out pertubations on each dataset and, that those perturbations would be held out across all datasets.  This methodology ensures that we do not have perturbation leakage.  Additionally this allows us to do a direct head-to-head comparison for the Replogle K562-essential dataset based on what we held out.  
+
+For the reamining datasets, since we exptracted perturbations at random, we will have to compare against published numbers. If we have time we'll attempt to run the models on the same splits we have (if we can fennagle the data in).  
+
 ### Full Model Evals
 
 #### Expression Prediction
 
-The main goal of this eval is to see if we can predit post perturbation gene expression.  This eval is useful as a high accuracy in gene expression can lead to an explainable understanding on perturbation effects for viability and gene network impact. In v0.6 we're focusing on 10,000 genes. Since we're covering almost half of the known genes, many of the genes will not have signficant changes. This means that we have to be careful to not evaluate just the whole gene set as predicting no change can be highly accurate for most genes.  To avoid falling into this trap, we run a number of different analyses including focusing on the top 20 and top 50 differentially expressed genes allowing us to see if the model is able to predict the largest movement vs just the housekeeping genes. While we've done a number of different analysis, we'll dive into the following commonly performed evals. 
+The main goal of this eval is to see if we can predit post perturbation gene expression.  This eval is useful as a high accuracy in gene expression can lead to an explainable understanding on perturbation effects for viability and gene network impact. In v0.6 we're focusing on 10,000 genes. Since we're covering almost half of the known genes, many of the genes will not have signficant changes. This means that we have to be careful to not evaluate just the whole gene set as predicting no change can be highly accurate for most genes.  To avoid falling into this trap, we run a number of different analyses including focusing on the top 20 and top 50 differentially expressed genes allowing us to see if the model is able to predict the largest movement vs just the housekeeping genes.
 
-##### Per-Perturbation Mean Pearson Correlation Coefficient 
+While we've done a number of different analysis, we'll dive into the following commonly performed evals. A major component of our expression benchmark is not looking at raw prediction made by the linear expression decoder, but the relative prediction to the the predicted control. Our baseline *real delta* is just the observed change in expression in the raw data as calculated by $\delta_g = x^{\text{case}}_g - x^{\text{ctrl}}_g$.  To calcluated our *predicted delta*, we first pass the latent representation of our control cell through the linear expression decoder and then subtract the pertubed expression prediction from it, calculating $\hat{\delta}_g = \hat{x}^{\text{case}}_g - \hat{x}^{\text{ctrl}}_g$. We use the predicted control expression to isolate our expression prediction into terms of BioJEPA-AC's learned latent space, ensuring that if it learns a different baseline for the control but knows the distance to move the case cell, it can still be correct.  The expression deltas only work for some of our evals while others rely on absolute prediction. To create our absolutes, we look at the raw data for our *real absolute* expression. For our *predicted absolute* we add our predicted delta to our real control, calcluating $\hat{x}^{\text{abs}}_g = x^{\text{ctrl}}_g + \hat{\delta}_g$.    These four values, along with our control form the basis of our evaluation benchmark. 
+
+For each of the following benchmarks, I'll explan how the calcluation is done, and then report our the performance per dataset.  I'll add commentary where appropriate. 
+
+##### Sample Level Pearson's Correlation Coefficient For Top 20 DEGs
+
+For each sample we calculate the Pearson's correlation coefficient, $r$, on the top 20 differentially expressed genes (DEGs). Pearson's correlation coefficient is a measure of how linearly correlated the predicted and real expression profiles are.  For our calculation, we focus on evaluating the change in gene expression, or *delta*. The value of this eval is that if the predicted expression has a high correlation with the real expression, but the values are off, our model is still useful as it's learned the profile.  Since our dataset has 10,000 genes, many will have minor adjustments to expression; therefore, we only evaluate the genes where we see the largest changes in expression. The genes are identified as the ones with the highest *real delta* absolute values. We then compare those against the *predicted delta* using: 
+$$
+r_{\text{sample}} = \frac{1}{N}\sum_{i=1}^{N}\frac{\sum_{k=1}^{K}(\hat{\delta}_{i,k} - \bar{\hat{\delta}}_i)(\delta_{i,k} - \bar{\delta}_i)}{\sqrt{\sum_{k=1}^{K}(\hat{\delta}_{i,k} - \bar{\hat{\delta}}_i)^{2}} \cdot \sqrt{\sum_{k=1}^{K}(\delta_{i,k} - \bar{\delta}_i)^{2}}}
+$$
+
+where $K=20$ genes are selected per sample as the largest $|\delta_{i,g}|$. 
+
+We see the folloiwng performance by dataset
+
+|Dataset|BioJEPA-AC v0.6|Dataset X|
+|-|-|-|
+| Adamson|0.8330||
+| Replogle K562 essential|0.8473||
+| Replogle K562 genome-wide|0.8900||
+| Norman|0.7634||
+| Sciplex|0.8411||
+
+##### Perturbation Level Mean Pearson Correlation Coefficient
+
+
+
+
+
+
+
+pearson_all_genes, pearson_delta_all_genes
+
+|Dataset|BioJEPA-AC v0.6|Dataset X|
+|-|-|-|
+| Adamson|||
+| Replogle K562 essential|||
+| Replogle K562 genome-wide|||
+| Norman|||
+| Sciplex|||
+
+##### $R^2$ Top 50 DEG 
+|Dataset|BioJEPA-AC v0.6|Dataset X|
+|-|-|-|
+| Adamson|||
+| Replogle K562 essential|||
+| Replogle K562 genome-wide|||
+| Norman|||
+| Sciplex|||
 
 ##### Cross Perturbation Centroid Accuracy
+
+centroid_accuracy
+|Dataset|BioJEPA-AC v0.6|Dataset X|
+|-|-|-|
+| Adamson|||
+| Replogle K562 essential|||
+| Replogle K562 genome-wide|||
+| Norman|||
+| Sciplex|||
+
+##### Control Beat Rate
+
+vs_baseline.beat_rate
+|Dataset|BioJEPA-AC v0.6|Dataset X|
+|-|-|-|
+| Adamson|||
+| Replogle K562 essential|||
+| Replogle K562 genome-wide|||
+| Norman|||
+| Sciplex|||
+
+
+
+
 
 
 

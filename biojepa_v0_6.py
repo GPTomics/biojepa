@@ -176,6 +176,7 @@ class ActionComposerConfig:
     num_modes: int = 9
     max_perts: int = 4
     heads: int = None
+    alignment_temperature: float = 0.012
 
 class ActionComposer(nn.Module):
     def __init__(self, config):
@@ -214,6 +215,9 @@ class ActionComposer(nn.Module):
         # Attention pooling for alignment (query is learned)
         self.pool_query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
         self.pool_attn = nn.MultiheadAttention(D, num_heads=config.heads, batch_first=True)
+
+        # Learnable contrastive temperature (alignment only)
+        self.log_temperature = nn.Parameter(torch.tensor(math.log(config.alignment_temperature)))
 
     def _encode_target(self, target_emb):
         return self.target_projector(target_emb)
@@ -515,7 +519,7 @@ class BioJepaConfig:
 
     # EMA
     ema_momentum: float = 0.995
-    
+
 class BioJepa(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -557,7 +561,7 @@ class BioJepa(nn.Module):
         )
         self.predictor = ACPredictor(pred_conf)
 
-        ## Pretraining 
+        ## Pretraining
         mask_pred_conf = copy.deepcopy(enc_conf)
         mask_pred_conf.n_layer = config.n_pre_layer
         self.masked_predictor = MaskedPredictor(mask_pred_conf)
@@ -635,17 +639,8 @@ class BioJepa(nn.Module):
 
         return self.config.sim_coeff * rec_loss + reg_loss
 
-    def forward_alignment(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.07):
-        '''
-        Dual-path alignment: align sequence representations with target representations.
-
-        Args:
-            seq_emb: [B, N_pert, max_seq_dim] - sequence embeddings
-            target_emb: [B, N_pert, target_dim] - target protein embeddings
-            modality_ids: [B, N_pert] - 0=dna, 1=protein, 2=chemical
-            mode_ids: [B, N_pert] - perturbation mode
-            pert_mask: [B, N_pert] - valid perturbations
-        '''
+    def forward_alignment(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask):
+        '''Dual-path alignment: align sequence representations with target representations.'''
         z_seq = self.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
         z_target = self.composer.encode_target_path(target_emb, mode_ids, pert_mask)
 
@@ -655,33 +650,21 @@ class BioJepa(nn.Module):
         z_seq = F.normalize(z_seq, dim=1)
         z_target = F.normalize(z_target, dim=1)
 
+        temperature = self.composer.log_temperature.exp()
         logits = torch.matmul(z_seq, z_target.T) / temperature
         labels = torch.arange(logits.shape[0], device=logits.device)
 
         return F.cross_entropy(logits, labels)
 
     def forward(self, x_control, total_control, x_case, total_case,
-                seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask):
-        '''
-        Full training forward with multi-perturbation support.
-
-        Args:
-            x_control: [B, num_genes] - control expression
-            total_control: [B] - control total counts
-            x_case: [B, num_genes] - perturbed expression
-            total_case: [B] - perturbed total counts
-            seq_emb: [B, N_pert, max_seq_dim] - sequence embeddings
-            target_emb: [B, N_pert, target_dim] - target embeddings
-            modality_ids: [B, N_pert] - 0=dna, 1=protein, 2=chemical
-            mode_ids: [B, N_pert] - perturbation mode
-            has_seq: [B, N_pert] - bool, sequence available
-            has_target: [B, N_pert] - bool, target available
-            pert_mask: [B, N_pert] - bool, valid perturbations
-        '''
+                seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask,
+                mask_ratio=None):
+        '''Full training forward with multi-perturbation support.'''
         B, N = x_control.shape
 
+        effective_mask_ratio = mask_ratio if mask_ratio is not None else self.config.mask_ratio
         rand = torch.rand(B, N, device=x_control.device)
-        mask_idx = rand < self.config.mask_ratio
+        mask_idx = rand < effective_mask_ratio
 
         with torch.no_grad():
             target_latents = self.teacher(x_case, total_case)
@@ -700,12 +683,9 @@ class BioJepa(nn.Module):
         target_masked = target_latents[mask_idx]
 
         with torch.autocast(device_type='cuda', enabled=False):
-            rec_loss = F.gaussian_nll_loss(
-                pred_mu_masked.float(),
-                target_masked.float(),
-                torch.exp(pred_logvar_masked),
-                reduction='mean'
-            )
+            variance = torch.exp(pred_logvar_masked)
+            nll = F.gaussian_nll_loss(pred_mu_masked.float(), target_masked.float(), variance, reduction='none')
+            rec_loss = (nll * variance.detach().sqrt()).mean()
 
         reg_loss = self.vicreg_loss(
             pred_mu.reshape(-1, self.config.embed_dim),

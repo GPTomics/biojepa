@@ -19,6 +19,7 @@ class AlignmentConfig:
     batch_size: int = 32
     weight_decay: float = 0.05
     n_steps: int = None
+    temperature: float = 0.012
 
 
 @dataclass
@@ -28,6 +29,7 @@ class FullTrainingConfig:
     batch_size: int = 32
     weight_decay: float = 0.05
     n_steps: int = None
+    mask_anneal_pct: float = 0.0
 
 
 @dataclass
