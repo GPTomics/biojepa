@@ -1104,7 +1104,8 @@ def _compute_embedding_consistency(embeddings, pert_ids, label='', verbose=False
     rng = np.random.RandomState(42)
     e1_list, e2_list = [], []
     for _ in range(n_samples):
-        p1, p2 = rng.choice(pert_list, 2, replace=False)
+        idx1, idx2 = rng.choice(len(pert_list), 2, replace=False)
+        p1, p2 = pert_list[idx1], pert_list[idx2]
         e1_list.append(valid_perts[p1][rng.randint(len(valid_perts[p1]))])
         e2_list.append(valid_perts[p2][rng.randint(len(valid_perts[p2]))])
     inter_dists = np.linalg.norm(np.array(e1_list) - np.array(e2_list), axis=1)

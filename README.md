@@ -147,8 +147,12 @@ v0.6: 1,085 test perturbations, 10K genes, 5 datasets (309,760 samples). v0.5: 2
     1. Benefit: Multiplicative gating improves gradient flow and model expressivity. The gating mechanism has biological relevance as gene regulation inherently involves activation/inhibition gating.
 7. **Output Gating for Linear Attention:** Added a learnable sigmoid gate to the linear attention output in BioLinearAttention. The gate is computed from the query input (`sigmoid(gate(x))`) and multiplies the attention output before the final projection. Critically, gating is applied only to self-attention (`kv is None`), not cross-attention, to preserve the perturbation response pathway in the ACPredictor.
     1. Benefit: Provides per-gene control over attention contribution, allowing the model to learn which genes should dominate attention patterns. Proven effective for linear attention architectures (Gated DeltaNet, Qwen3-Next, Kimi K2).
-8. **Latent Masking for Action Predictor:** Added masking on our action predictor so that a portion of (`n=0.15`) of the input vector is masked during training of the ACPredictor. 
+8. **Latent Masking for Action Predictor:** Added masking on our action predictor so that a portion of (`n=0.15`) of the input vector is masked during training of the ACPredictor.
     1. Benefit: Pushes the model to better learn the relationship between perturbations and cell states, improving prediction accuracy over implicit positional learning.
+9. **Beta-NLL Loss (beta=0.5):** Replaced standard Gaussian NLL with a beta-weighted variant that scales each sample's loss by `variance.detach().sqrt()`. The detached variance breaks the gradient coupling that allows the model to reduce loss by inflating its uncertainty estimate rather than improving its predictions.
+    1. Benefit: Fixes a known pathology in heteroscedastic regression where the model learns to predict high variance everywhere to trivially minimize NLL. With beta=0.5, the model must actually improve its mean predictions to reduce loss.
+10. **Mask Annealing:** Optionally reduces the gene mask ratio during the final fraction of full training epochs, linearly interpolating from the base mask ratio down to a floor of 0.1. Controlled by `mask_anneal_pct` (default 0.0 = disabled).
+    1. Benefit: Bridges the train-test mismatch where training uses partial gene masking but inference sees all genes. Gradually exposing the model to less masking in late training improves generalization to the unmasked inference setting.
 
 
 ## v0.5 Architecture

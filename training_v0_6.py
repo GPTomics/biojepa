@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -268,9 +267,6 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
         p.requires_grad = False
     for p in model.composer.parameters():
         p.requires_grad = True
-    model.composer.log_temperature.data.fill_(math.log(cfg.temperature))
-    model.composer.log_temperature.requires_grad = True
-
     optimizer = torch.optim.AdamW(model.composer.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05)
 
@@ -296,7 +292,7 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
                     pert_mask = torch.ones(B, 1, dtype=torch.bool, device=device)
 
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        val_loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask)
+                        val_loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
@@ -313,7 +309,7 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
 
         optimizer.zero_grad()
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-            loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask)
+            loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
         loss.backward()
         optimizer.step()
         scheduler.step()
@@ -321,8 +317,7 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
         loss_history.append(loss.item())
 
         if step % 100 == 0:
-            temp = model.composer.log_temperature.exp().item()
-            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e} | Temp: {temp:.4f}')
+            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
 
         if last_step:
             torch.save({

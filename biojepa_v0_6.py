@@ -176,7 +176,6 @@ class ActionComposerConfig:
     num_modes: int = 9
     max_perts: int = 4
     heads: int = None
-    alignment_temperature: float = 0.012
 
 class ActionComposer(nn.Module):
     def __init__(self, config):
@@ -215,9 +214,6 @@ class ActionComposer(nn.Module):
         # Attention pooling for alignment (query is learned)
         self.pool_query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
         self.pool_attn = nn.MultiheadAttention(D, num_heads=config.heads, batch_first=True)
-
-        # Learnable contrastive temperature (alignment only)
-        self.log_temperature = nn.Parameter(torch.tensor(math.log(config.alignment_temperature)))
 
     def _encode_target(self, target_emb):
         return self.target_projector(target_emb)
@@ -639,7 +635,7 @@ class BioJepa(nn.Module):
 
         return self.config.sim_coeff * rec_loss + reg_loss
 
-    def forward_alignment(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask):
+    def forward_alignment(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.012):
         '''Dual-path alignment: align sequence representations with target representations.'''
         z_seq = self.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
         z_target = self.composer.encode_target_path(target_emb, mode_ids, pert_mask)
@@ -650,7 +646,6 @@ class BioJepa(nn.Module):
         z_seq = F.normalize(z_seq, dim=1)
         z_target = F.normalize(z_target, dim=1)
 
-        temperature = self.composer.log_temperature.exp()
         logits = torch.matmul(z_seq, z_target.T) / temperature
         labels = torch.arange(logits.shape[0], device=logits.device)
 
