@@ -1265,16 +1265,26 @@ def _compute_expression_prediction(inf, n_genes):
     per_pert_pearson_delta = np.array(per_pert_pearson_delta)
     per_pert_pearson_top50 = np.array(per_pert_pearson_top50)
 
-    # Centroid accuracy
     if len(pert_keys) >= 2:
-        pred_matrix = np.array([mean_pred_deltas[k] for k in pert_keys])
-        real_matrix = np.array([mean_real_deltas[k] for k in pert_keys])
-        pred_sq = np.sum(pred_matrix**2, axis=1)
-        real_sq = np.sum(real_matrix**2, axis=1)
-        dist_matrix = pred_sq[:, None] + real_sq[None, :] - 2.0 * pred_matrix @ real_matrix.T
-        centroid_acc = float(np.mean(np.argmin(dist_matrix, axis=1) == np.arange(len(pert_keys))))
+        group_to_keys = defaultdict(list)
+        for key in pert_keys:
+            seq_idx, target_idx, modality, mode, cell_type = key
+            if target_idx >= 0:
+                group = ('t', target_idx, mode, cell_type)
+            else:
+                group = ('s', seq_idx, mode, cell_type)
+            group_to_keys[group].append(key)
+
+        groups = list(group_to_keys.keys())
+        grouped_pred = np.array([np.mean([mean_pred_deltas[k] for k in group_to_keys[g]], axis=0) for g in groups])
+        grouped_real = np.array([np.mean([mean_real_deltas[k] for k in group_to_keys[g]], axis=0) for g in groups])
+        g_pred_sq = np.sum(grouped_pred**2, axis=1)
+        g_real_sq = np.sum(grouped_real**2, axis=1)
+        g_dist_matrix = g_pred_sq[:, None] + g_real_sq[None, :] - 2.0 * grouped_pred @ grouped_real.T
+        centroid_acc = float(np.mean(np.argmin(g_dist_matrix, axis=1) == np.arange(len(groups))))
     else:
         centroid_acc = 0.0
+        groups = []
 
     # Fraction beating mean baseline
     n_beat, n_eval_baseline = 0, 0
@@ -1327,7 +1337,7 @@ def _compute_expression_prediction(inf, n_genes):
             'pearson_delta_all_genes': {'mean': float(per_pert_pearson_delta.mean()), 'median': float(np.median(per_pert_pearson_delta))},
             'pearson_top50_degs': {'mean': float(per_pert_pearson_top50.mean()), 'median': float(np.median(per_pert_pearson_top50))},
         },
-        'centroid_accuracy': centroid_acc,
+        'centroid_accuracy': {'accuracy': centroid_acc, 'n_groups': len(groups)},
         'vs_baseline': {'beat_rate': float(n_beat / n_eval_baseline) if n_eval_baseline > 0 else 0.0, 'n_evaluated': n_eval_baseline},
         'severity': {'pearson_r': float(severity_pearson), 'spearman_r': float(severity_spearman)},
         'error_by_magnitude': error_by_magnitude
@@ -1358,7 +1368,7 @@ def _expression_prediction(ctx):
     inf = ctx.test_inference
     n_genes = ctx.config['num_genes']
     result = _compute_expression_prediction(inf, n_genes)
-    print(f'expression_prediction: Pearson={result["perturbation_level"]["pearson_all_genes"]["mean"]:.4f}, R2={result["perturbation_level"]["r2_all_genes"]["mean"]:.4f}, Centroid_acc={result["centroid_accuracy"]:.4f}')
+    print(f'expression_prediction: Pearson={result["perturbation_level"]["pearson_all_genes"]["mean"]:.4f}, R2={result["perturbation_level"]["r2_all_genes"]["mean"]:.4f}, Centroid_acc={result["centroid_accuracy"]["accuracy"]:.4f}')
     by_dataset = {}
     for ds, ds_inf in inf.get('by_dataset', {}).items():
         if len(ds_inf.get('pert_keys', [])) > 0:
