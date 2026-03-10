@@ -101,6 +101,15 @@ class _RunningMeans:
         }
 
 
+def _build_multi_pert_key(all_target_idx, all_seq_idx, all_modality, all_mode, n_perts, cell_type):
+    slot_ids = []
+    for j in range(n_perts):
+        t, s = int(all_target_idx[j]), int(all_seq_idx[j])
+        mod, mode_val = int(all_modality[j]), int(all_mode[j])
+        slot_ids.append(('t', t, mod, mode_val) if t >= 0 else ('s', s, mod, mode_val))
+    return (tuple(sorted(slot_ids)), int(cell_type))
+
+
 class _LazyNpzDict(dict):
     '''Dict that lazy-loads heavy arrays from shard .npz files on first access.'''
     def __init__(self, data, shard_paths):
@@ -458,6 +467,8 @@ class EvalContext:
             shard_idx += 1
 
         bulk_global = _RunningMeans(N)
+        multi_pert_global = _RunningMeans(N)
+        multi_pert_first_seq_idx = {}
         ds_running = defaultdict(lambda: _RunningMeans(N))
         ct_running = defaultdict(lambda: _RunningMeans(N))
 
@@ -529,7 +540,6 @@ class EvalContext:
 
             for i in range(B):
                 key = (int(p_idx_np[i]), int(p_target_np[i]), int(p_mod_np[i]), int(p_mode_np[i]), int(cell_type_np[i]))
-                bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
 
                 sample_mse = float(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
                 top_20_idx = np.argsort(np.abs(real_delta_np[i]))[-20:]
@@ -542,13 +552,22 @@ class EvalContext:
                 sample_mses.append(sample_mse)
                 sample_correlations.append(sample_corr)
 
+                if n_perts_np[i] > 1:
+                    mp_key = _build_multi_pert_key(all_target_idx_np[i], all_seq_idx_np[i], all_modality_np[i], all_mode_np[i], int(n_perts_np[i]), cell_type_np[i])
+                    multi_pert_global.add(mp_key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                    multi_pert_first_seq_idx[mp_key] = int(p_idx_np[i])
+                else:
+                    bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+
                 ds_name = test_loader.dataset_id_to_name.get(int(ds_id_np[i]), 'unknown')
-                ds_running[ds_name].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                if n_perts_np[i] == 1:
+                    ds_running[ds_name].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
                 ds_sample_mses[ds_name].append(sample_mse)
                 ds_sample_correlations[ds_name].append(sample_corr)
 
                 ct = int(cell_type_np[i])
-                ct_running[ct].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                if n_perts_np[i] == 1:
+                    ct_running[ct].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
                 ct_sample_mses[ct].append(sample_mse)
                 ct_sample_correlations[ct].append(sample_corr)
 
@@ -557,7 +576,8 @@ class EvalContext:
 
         _flush_shard()
         pert_keys, bulk_result = bulk_global.finalize()
-        print(f'Aggregated {len(pert_keys)} perturbations, {len(sample_mses)} samples, {shard_idx} shards')
+        multi_pert_keys, multi_pert_bulk = multi_pert_global.finalize()
+        print(f'Aggregated {len(pert_keys)} single-pert, {len(multi_pert_keys)} multi-pert perturbations, {len(sample_mses)} samples, {shard_idx} shards')
 
         result = {
             'pert_keys': pert_keys, **bulk_result,
@@ -576,6 +596,9 @@ class EvalContext:
             'sample_dataset_ids': np.concatenate(sample_dataset_ids, axis=0),
             'dataset_id_to_name': test_loader.dataset_id_to_name,
         }
+        result['multi_pert_keys'] = multi_pert_keys
+        result['multi_pert_first_seq_idx'] = multi_pert_first_seq_idx
+        result.update({f'multi_pert_{k}': v for k, v in multi_pert_bulk.items()})
 
         by_dataset = {}
         for ds_name in sorted(ds_running.keys()):
@@ -1265,7 +1288,7 @@ def _compute_expression_prediction(inf, n_genes):
     per_pert_pearson_delta = np.array(per_pert_pearson_delta)
     per_pert_pearson_top50 = np.array(per_pert_pearson_top50)
 
-    if len(pert_keys) >= 2:
+    if len(pert_keys) >= 2 and len(pert_keys[0]) == 5:
         group_to_keys = defaultdict(list)
         for key in pert_keys:
             seq_idx, target_idx, modality, mode, cell_type = key
@@ -1904,19 +1927,13 @@ def _combination_perturbation(ctx):
     if combo_sample_mask.sum() == 0:
         return {'skipped': True, 'reason': 'no multi-pert samples in test set'}
 
-    combo_keys = set()
-    for i in range(len(n_perts_all)):
-        if n_perts_all[i] > 1:
-            key = (int(inf['sample_pert_ids'][i]), int(inf['sample_target_ids'][i]), int(inf['sample_pert_mods'][i]), int(inf['sample_all_mode'][i, 0]), int(inf['sample_cell_types'][i]))
-            combo_keys.add(key)
-
     combo_inf = {
-        'pert_keys': [k for k in inf['pert_keys'] if k in combo_keys],
-        'mean_pred_deltas': {k: v for k, v in inf['mean_pred_deltas'].items() if k in combo_keys},
-        'mean_real_deltas': {k: v for k, v in inf['mean_real_deltas'].items() if k in combo_keys},
-        'mean_pred_abs': {k: v for k, v in inf['mean_pred_abs'].items() if k in combo_keys},
-        'mean_real_abs': {k: v for k, v in inf['mean_real_abs'].items() if k in combo_keys},
-        'mean_control_states': {k: v for k, v in inf['mean_control_states'].items() if k in combo_keys},
+        'pert_keys': inf['multi_pert_keys'],
+        'mean_pred_deltas': inf['multi_pert_mean_pred_deltas'],
+        'mean_real_deltas': inf['multi_pert_mean_real_deltas'],
+        'mean_pred_abs': inf['multi_pert_mean_pred_abs'],
+        'mean_real_abs': inf['multi_pert_mean_real_abs'],
+        'mean_control_states': inf['multi_pert_mean_control_states'],
         'sample_mses': inf['sample_mses'][combo_sample_mask],
         'sample_correlations': inf['sample_correlations'][combo_sample_mask],
     }
@@ -1941,9 +1958,11 @@ def _combination_perturbation(ctx):
     if combo_mapping is None or single_deltas_data is None:
         additive_result, nonadd_result, per_key_results = skip_reason, skip_reason, {}
     else:
+        seq_idx_map = inf['multi_pert_first_seq_idx']
         combo_to_genes = {}
         for key in combo_inf['pert_keys']:
-            genes = combo_mapping.get(str(key[0]))
+            sid = seq_idx_map.get(key)
+            genes = combo_mapping.get(str(sid)) if sid is not None else None
             combo_to_genes[key] = tuple(genes) if genes else None
         additive_result, nonadd_result, per_key_results = _compute_additive_baseline(
             combo_inf, single_deltas_data['deltas'], single_deltas_data['gene_names'], combo_to_genes, n_genes
@@ -1987,12 +2006,12 @@ def _combination_perturbation(ctx):
 
     n_additive = additive_result.get('config', {}).get('n_evaluated', 0) if not additive_result.get('skipped') else 0
     n_gi = sum(v['n_combos'] for v in gi_result.get('by_subtype', {}).values())
-    print(f'combination_perturbation: {len(combo_keys)} combo perts, {int(combo_sample_mask.sum())} samples, '
+    print(f'combination_perturbation: {len(combo_inf["pert_keys"])} combo perts, {int(combo_sample_mask.sum())} samples, '
           f'{n_additive} additive baseline, {n_gi} GI-labeled')
 
     return {
         'expression_prediction': expr_pred,
-        'n_combo_perturbations': len(combo_keys),
+        'n_combo_perturbations': len(combo_inf['pert_keys']),
         'n_combo_samples': int(combo_sample_mask.sum()),
         'composition': composition,
         'additive_baseline': additive_result,

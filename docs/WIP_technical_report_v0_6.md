@@ -80,7 +80,7 @@ Since our cell state latent representation is $[\text{n\_genes}, \text{embed\_di
 
 We also use a general purpose linear classifier for predicting input metadata and classes (e.g. cell batch information, cell types, perturbation status, modes, pathways) from latent representations. The classifier projects the latent to the class dimension through a single linear layer, producing raw logits per class. In some cases like classifying a cell latent to a cell type, we add a mean-pooling step to collapse per-gene predictions to per-cell without giving the model more intelligence. We leave outputs as raw logits since our different evals post-process them in different ways.
 
-### Eval Data Splits - Hold Out 
+### Eval Data Splits - Hold Out
 
 To create our hold-out datasets, we targeted an 85% / 5% / 10% train / val / test split, with actual percentages varying slightly by dataset due to cross-dataset perturbation overlap. We first used the [GEARS python package](https://github.com/snap-stanford/GEARS/tree/master) to identify the held-out train / val / test split for Replogle K562-essential. This dataset uses a 67.5% / 7.5% / 25.0% train / val / test split, which we adopted as our starting point. The split identifies unique perturbations to hold out. Starting from this, we built a hold-out perturbation list that ensures we hit 15% held-out perturbations per dataset and that those perturbations are held out across all datasets. This ensures we have no perturbation leakage, and allows a direct head-to-head comparison on the Replogle K562-essential dataset using the GEARS-defined held-out set.
 
@@ -105,9 +105,7 @@ $$
 \text{Pearson }r_{\text{sample}} = \frac{1}{N}\sum_{i=1}^{N}\frac{\sum_{k=1}^{K}(\hat{\delta}_{i,k} - \bar{\hat{\delta}}_i)(\delta_{i,k} - \bar{\delta}_i)}{\sqrt{\sum_{k=1}^{K}(\hat{\delta}_{i,k} - \bar{\hat{\delta}}_i)^{2}} \cdot \sqrt{\sum_{k=1}^{K}(\delta_{i,k} - \bar{\delta}_i)^{2}}}
 $$
 
-where $K=20$ genes are selected per sample as the largest $|\delta_{i,g}|$. 
-
-We see the following performance by dataset:
+Where $K=20$ genes are selected per sample as the largest $|\delta_{i,k}|$.
 
 |Dataset|BioJEPA-AC v0.6|
 |-|-|
@@ -158,7 +156,7 @@ The thousands of unchanged genes where prediction and ground truth share the sam
 | Norman|0.2861|
 | Sciplex|0.0781|
 
-##### Perturbation Level Mean Coefficient of Determination $R^2$ For Top 50 DEG 
+##### Perturbation Level Mean Coefficient of Determination $R^2$ For Top 50 DEGs
 
 We calculate $R^2$ between our real and predicted absolute expression values on the top 50 differentially expressed genes for each perturbation, measuring how much variance in the real expression our predictions capture for the most affected genes.
 
@@ -167,7 +165,7 @@ R^{2}_{\text{top 50}} = \frac{1}{P}\sum^{P}_{p=1}\left(1 - \frac{\sum_{k \in \ma
   \in \mathcal{D}_{p}}(y_{p,k} - \bar{y}_{p})^{2}}\right)
 $$
 
-where $\mathcal{D}_{p}$ is the set of 50 genes with the largest $|\delta_{p,k}|$ for perturbation $p$, and $\bar{y}_{p} = \frac{1}{|\mathcal{D}_{p}|}\sum_{k \in \mathcal{D}_{p}} y_{p,k}$. Note that while the top-50 genes are selected by delta magnitude, $R^2$ itself is computed on absolute expression values. Since we already have the linear correlation of all genes calculated using Pearson's coefficient, we focus $R^2$ on just the top differentially expressed genes, which tests whether the model accurately captures the magnitude of expression changes at the genes most affected by the perturbation. Unlike Pearson's correlation, $R^2$ penalizes magnitude errors, so simply echoing the control state is not enough.
+Where $\mathcal{D}_{p}$ is the set of 50 genes with the largest $|\delta_{p,k}|$ for perturbation $p$, and $\bar{y}_{p} = \frac{1}{|\mathcal{D}_{p}|}\sum_{k \in \mathcal{D}_{p}} y_{p,k}$. Note that while the top-50 genes are selected by delta magnitude, $R^2$ itself is computed on absolute expression values. Since we already have the linear correlation of all genes calculated using Pearson's coefficient, we focus $R^2$ on just the top differentially expressed genes, which tests whether the model accurately captures the magnitude of expression changes at the genes most affected by the perturbation. Unlike Pearson's correlation, $R^2$ penalizes magnitude errors, so simply echoing the control state is not enough.
 
 |Dataset|BioJEPA-AC v0.6|
 |-|-|
@@ -181,7 +179,7 @@ where $\mathcal{D}_{p}$ is the set of 50 genes with the largest $|\delta_{p,k}|$
 
 We run evaluations across our perturbation expression profiles. While these evaluations still look at the expression prediction mean per perturbation, they evaluate the predictions against one another to test whether our model can distinguish between different perturbations.
 
-##### Centroid Accuracy
+##### Cross Perturbation Centroid Accuracy
 
 Centroid accuracy compares each predicted delta vector against all real delta vectors to find the nearest match. For this calculation, we change how we define a unique perturbation. Since this metric cares mainly about perturbation effect, we re-group our perturbations by taking the mean expression delta across perturbations sharing the same target protein (or sequence if target is unavailable), mode, and cell type. This avoids asking the model to differentiate between different perturbations targeting the same protein. We calculate centroid accuracy as:
 $$
@@ -197,20 +195,75 @@ Where $G$ is the number of unique perturbation target groups, and $\hat{\delta}_
 | Norman|0.1250|
 | Sciplex|0.1429|
 
+##### Cross Perturbation Severity Correlation
+
+We measure whether our model accurately predicts the overall strength of each perturbation's effect. Using the same perturbation-level mean deltas, we compute the L2 norm (Euclidean magnitude) of both the real and predicted expression delta vectors, reducing each to a scalar severity score. We then calculate Pearson's correlation across perturbations between these severity scores:
+
+$$
+\begin{aligned}
+s_p &= \|\delta_p\|_2 = \sqrt{\sum_{k=1}^{K} \delta_{p,k}^{2}}   \\
+\hat{s}_{p} &= \|\hat{\delta}_{p}\|_2 = \sqrt{\sum_{k=1}^{K} \hat{\delta}_{p,k}^{2}} \\
+\text{Pearson }\Delta r_{\text{severity}} &= \frac{\sum_{p=1}^{P}(\hat{s}_{p} - \bar{\hat{s}})(s_{p} - \bar{s})}{\sqrt{\sum_{p=1}^{P}(\hat{s}_{p} - \bar{\hat{s}})^{2}}\;\sqrt{\sum_{p=1}^{P}(s_{p} - \bar{s})^{2}}}
+\end{aligned}
+$$
+
+Where $s_p$ and $\hat{s}_{p}$ are the real and predicted severity scores for perturbation $p$, computed as the L2 norm across all $K$ genes. A high severity correlation indicates our model knows which perturbations have large effects versus small, even if it doesn't perfectly predict the per-gene pattern.
+
+|Dataset|BioJEPA-AC v0.6|
+|-|-|
+| Adamson|0.1063|
+| Replogle K562 essential|0.2314|
+| Replogle K562 genome-wide|0.7981|
+| Norman|-0.2724|
+| Sciplex|-0.2460|
+
 ### Gene Level Analysis
 
-### Perturbation Retrieval
+We use this eval to assess whether our model correctly identifies which genes are affected by a perturbation and in which direction. Unlike expression prediction, which measures magnitude accuracy, gene level analysis focuses on categorical behavior across differentially expressed genes. These evaluations rely on the same perturbation-level mean *real delta* and *predicted delta*.
 
-### Uncertainty Calibration
+For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_gene_analysis.ipynb).
 
-### Action Vector Pathway
+##### Directional Accuracy For Top 50 DEGs
+
+We measure whether our model correctly predicts if a differentially expressed gene is up-regulated or down-regulated. We first classify each gene's expression delta into one of three categories using a threshold:
+$$
+d(\delta_g) = \begin{cases} +1 & \text{if } \delta_g \geq \tau \\ -1 & \text{if } \delta_g \leq -\tau \\ 0 & \text{otherwise} \end{cases}
+$$
+
+Where $\tau = 0.25$ is the direction threshold. We apply this classification to both our real and predicted perturbation-level mean expression deltas, then select the top 50 DEGs per perturbation based on the largest absolute real expression delta. We then compare how many of those genes the prediction classified correctly:
+
+$$
+\text{Direction Accuracy}_{topK} = \frac{1}{P \cdot K} \sum_{p=1}^{P} \sum_{g \in \mathcal{T}_p} \mathbb{1}\left[d(\hat{\delta}_{p,g}) = d(\delta_{p,g})\right]
+$$
+
+Where $\mathcal{T}_{p}$ is the set of $K=50$ genes with largest $|\delta_{p,g}|$ for perturbation $p$. Since we select the top 50 out of 10,000 genes, we typically focus on genes with large expression changes, but perturbations with lower overall cell impact and fewer significantly moving genes make this a harder metric.
+
+|Dataset|BioJEPA-AC v0.6|
+|-|-|
+| Adamson|0.6511|
+| Replogle K562 essential|0.3712|
+| Replogle K562 genome-wide|0.7072|
+| Norman|0.3275|
+| Sciplex|0.8645|
 
 ### Mechanism of Action Matching
+##### Within/between pathway similarity ratio
 
 ### Combination Perturbation Impact
+##### model Pearson delta vs additive baseline
+##### Non-additive gene MSE
+##### Model beats additive rate
+
+### Uncertainty Calibration
+##### ECE
+##### Uncertainty-error Pearsons
 
 ### Dose Response
+##### Dose-severity Spearman correlation
+##### Monotonicity Score
 
+### Other evals done but not reported on
+Perturbation Retrieval, Action Vector Pathway
 
 
 ---
