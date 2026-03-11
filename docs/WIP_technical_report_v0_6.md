@@ -263,12 +263,8 @@ Where $\mathcal{T}_{p}$ is the set of $K=50$ genes with largest $|\delta_{p,g}|$
 ##### Monotonicity Score
 
 ### Other evals done but not reported on
-Perturbation Retrieval, Action Vector Pathway
 
-
----
-
-
+Within each category, we've done a number of other evaluations. We also have two additional categories, Perturbation Retrieval and Action Vector Pathway, that we did not report on.  Reporting and providing explanation/analysis on every eval we did would be too tedious, though, our explainer notebooks to cover how each value was calculated if you want to better understand the calculation and meaning. 
 
 # Training
 

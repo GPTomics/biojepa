@@ -1522,7 +1522,7 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     return result
 
 
-def _perturbation_retrieval(ctx, n_eval=100):
+def _perturbation_retrieval(ctx, n_eval=1000):
     '''Given desired outcome, can we find the right perturbation?'''
     inf = ctx.test_inference
     pert_keys = inf['pert_keys']
@@ -1602,7 +1602,8 @@ def _perturbation_retrieval(ctx, n_eval=100):
             lookup_idx = key[idx_pos]
             if lookup_idx < 0 or lookup_idx >= n_bank:
                 continue
-            preds = predict_all_deltas(mean_control_states[key], bank_info)
+            key_bank_info = {**bank_info, 'mode': key[3]}
+            preds = predict_all_deltas(mean_control_states[key], key_bank_info)
             sims = cos_sim(preds, mean_real_deltas[key])
             rank = int(np.where(np.argsort(sims)[::-1] == lookup_idx)[0][0]) + 1
             ranks.append(rank)
