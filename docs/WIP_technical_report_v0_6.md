@@ -20,8 +20,8 @@ We present an updated view on BioJEPA-AC (Biological Joint-Embedding Predictive 
 
 Our v0.6 architecture predicts a latent representation of cell state given its baseline cell state and up to 4 predefined or novel perturbations across different modalities. We represent cell states across 10,000 genes with continuous-valued expression counts that may have extreme sparsity inherent to Perturb-seq data. The architecture comprises the following modules:
 
-* **Cell State Encoder**:  A transformer-based module that maps cell states into a latent space based on relative gene expression and total cell expression. It serves as both the *Context Encoder* and *Target Encoder*.
-* **Action Composer**:  A dual-pathway encoder with additive fusion and FiLM-based mode conditioning that creates a unified latent space for the embedding representations of different perturbation types.
+* **Cell State Encoder**: A transformer-based module that maps cell states into a latent space based on relative gene expression and total cell expression. It serves as both the *Context Encoder* and *Target Encoder*.
+* **Action Composer**: A dual-pathway encoder with additive fusion and FiLM-based mode conditioning that creates a unified latent space for the embedding representations of different perturbation types.
 * **Action Conditioned Predictor**: A transformer-based module that uses the action latents to adjust the cell state representation in the latent space, generating the latent representation of the perturbed cell state.
 
 ### Cell State Encoder
@@ -30,7 +30,7 @@ Our v0.6 architecture predicts a latent representation of cell state given its b
 
 *Fig X. The data that creates our cell state representation in the latent space*
 
-The cell state encoder is the foundation of our joint-embedding architecture, serving as both the context encoder (student) and target encoder (teacher). The encoder is transformer-based with linear attention, SwiGLU, and RMSNorm. It uses both the count/log normalized expression counts and the sum of total expression to build our cell latent. We include the total expression sum to ensure the model can flag unviable cells that would look like just "noisy" expression if we only used the normalized per-gene expression. Our cell representation lives in the $[\text{token},\text{embedding}]$ space, where tokens correspond to genes. We designed the architecture so we can expand to non-gene-based tokens. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_cell_state_encoder.ipynb) notebook for a deeper dive.
+The cell state encoder is the foundation of our joint-embedding architecture, serving as both the context encoder (student) and target encoder (teacher). The encoder is transformer-based with linear attention, SwiGLU, and RMSNorm. It uses both the count/log normalized expression counts and the sum of total expression to build our cell latent. We include the total expression sum to ensure the model can flag unviable cells that would look like "noisy" expression if we only used the normalized per-gene expression. Our cell representation lives in the $[\text{token},\text{embedding}]$ space, where tokens correspond to genes. We designed the architecture so we can expand to non-gene-based tokens. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_cell_state_encoder.ipynb) notebook for a deeper dive.
 
 ### Action Composer
 
@@ -40,7 +40,7 @@ The cell state encoder is the foundation of our joint-embedding architecture, se
 
 The action composer is a dual-pathway linear encoder that projects perturbation embeddings into a shared latent space via separate linear projections, fuses them, and applies FiLM conditioning from a learned mode embedding to encode the perturbation with mechanism awareness. Our perturbation representation ends in the $[\text{n\_perts},\text{pert\_embedding}]$ space.
 
-Perturbations can be targeted genetic (e.g. CRISPR) perturbations or therapeutics including nucleic acids, proteins, and small molecules. We require that a perturbation has either a sequence and/or target (at least one), and the mode (crispri, crispra, overexpression, knockout, inhibitor, agonist, degrader, binder, unknown). To improve flexibility and generalization, we pass the raw sequence and target representations through bio foundation models during data prep rather than feeding them directly to the composer. We rely on the action composer to learn embeddings that represent functionally similar but sequence-different perturbations, enabling expansion to unseen perturbations. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_action_composer.ipynb) notebook for a deeper dive.
+Perturbations can be targeted genetic (e.g. CRISPR) perturbations or therapeutics including nucleic acids, proteins, and small molecules. We require that a perturbation has a sequence and/or target (at least one), and the mode (crispri, crispra, overexpression, knockout, inhibitor, agonist, degrader, binder, unknown). To improve flexibility and generalization, we pass the raw sequence and target representations through bio foundation models during data prep rather than feeding them directly to the composer. We rely on the action composer to learn embeddings that represent functionally similar but sequence-different perturbations, enabling expansion to unseen perturbations. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_action_composer.ipynb) notebook for a deeper dive.
 
 ### Action Conditioned Predictor
 
@@ -48,7 +48,7 @@ Perturbations can be targeted genetic (e.g. CRISPR) perturbations or therapeutic
 
 *Fig X. An overview of how we shift the cell state in the shared latent based on the perturbation*
 
-The action conditioned predictor is the foundation of the "AC" portion of our BioJEPA-AC model. The predictor is transformer-based with similar linear attention, SwiGLU, and RMSNorm. It differs from the cell state encoder by employing two different attention layers: cross-attention to shift the cell state based on the perturbation, and self-attention to allow the cell state to learn from itself. The predictor uses target indices to predict only a portion of the cell state representation, similar to how masked models operate. It fuses the unperturbed cell representation from the context encoder with the target tokens, then uses cross-attention to incorporate the action latents from the action composer. The predictor outputs a predicted representation of the perturbed cell state including an uncertainty estimate, each in the $[\text{token},\text{embedding}]$ space. It operates in the same shared latent space that the cell state encoder learns, and is just learning where to move the representation based on the perturbations.
+The action conditioned predictor is the foundation of the "AC" portion of our BioJEPA-AC model. The predictor is transformer-based with similar linear attention, SwiGLU, and RMSNorm. It differs from the cell state encoder by employing two different attention layers: cross-attention to shift the cell state based on the perturbation, and self-attention to allow the cell state to learn from itself. The predictor uses target indices to predict only a portion of the cell state representation, similar to how masked models operate. It fuses the unperturbed cell representation from the context encoder with the target tokens, then uses cross-attention to incorporate the action latents from the action composer. The predictor outputs a predicted representation of the perturbed cell state including an uncertainty estimate, each in the $[\text{token},\text{embedding}]$ space. It operates in the same shared latent space that the cell state encoder learns, and learns where to move the representation based on the perturbations.
 
 Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_ac_predictor.ipynb) notebook for a deeper dive.
 
@@ -74,7 +74,7 @@ Since BioJEPA-AC is an encoder, its output is an embedding, not a directly inter
 
 #### Linear Expression Decoder
 
-Since our cell state latent representation is $[\text{n\_genes}, \text{embed\_dim}]$, the decoder projects each gene's embedding to a scalar expression value through its single linear layer. Our model outputs both a mean and logvar representation, but we feed only the mean into this decoder, reserving the logvar for uncertainty analysis.
+Since our cell state latent representation is $[\text{n\_genes}, \text{embed\_dim}]$, the decoder projects each gene's embedding to a scalar expression value through its single linear layer. Our model outputs both a mean and log-variance (logvar) representation, but we feed only the mean into this decoder, reserving the logvar for uncertainty analysis.
 
 #### General Linear Classifier
 
@@ -90,7 +90,7 @@ For the remaining datasets, where we extracted perturbations at random, we compa
 
 We use this eval to measure how well our model predicts post-perturbation gene expression. High accuracy here provides interpretable insight into perturbation effects on viability and gene networks. Since most of our 10,000 genes will not change significantly for any given perturbation, predicting no change can be highly accurate. To avoid this trap, we run analyses at multiple granularities including focusing on the top 20 and top 50 differentially expressed genes.
 
-While we've done a number of different analyses, we'll dive into the following commonly performed evals. A major component of our expression benchmark is not looking at the raw prediction made by the linear expression decoder, but the relative prediction to the predicted control. Our baseline *real delta* is simply the observed change in expression: $\delta_g = x^{\text{case}}_g - x^{\text{ctrl}}_g$. To get our *predicted delta*, we pass both the predicted and control latent representations through the linear expression decoder and compute the difference: $\hat{\delta}_g = \hat{x}^{\text{case}}_g - \hat{x}^{\text{ctrl}}_g$. We use the predicted control expression to isolate our expression prediction into terms of BioJEPA-AC's learned latent space, ensuring that if the model learns a different baseline for the control but knows the distance to move the case cell, it can still score well. The expression deltas only work for some of our evals while others rely on absolute prediction. For our *real absolute* expression, we use the observed case expression directly. For our *predicted absolute*, we add our predicted delta to our real control: $\hat{x}^{\text{abs}}_g = x^{\text{ctrl}}_g + \hat{\delta}_g$. These four values, along with our control, form the basis of our evaluation benchmark.
+While we've done a number of different analyses, we cover the following commonly performed evals. A major component of our expression benchmark is not looking at the raw prediction made by the linear expression decoder, but the relative prediction to the predicted control. Our baseline *real delta* is simply the observed change in expression: $\delta_g = x^{\text{case}}_g - x^{\text{ctrl}}_g$. To get our *predicted delta*, we pass both the predicted and control latent representations through the linear expression decoder and compute the difference: $\hat{\delta}_g = \hat{x}^{\text{case}}_g - \hat{x}^{\text{ctrl}}_g$. We use the predicted control expression to isolate our expression prediction into terms of BioJEPA-AC's learned latent space, ensuring that if the model learns a different baseline for the control but knows the distance to move the case cell, it can still score well. The expression deltas only work for some of our evals while others rely on absolute prediction. For our *real absolute* expression, we use the observed case expression directly. For our *predicted absolute*, we add our predicted delta to our real control: $\hat{x}^{\text{abs}}_g = x^{\text{ctrl}}_g + \hat{\delta}_g$. These four values, along with our control, form the basis of our evaluation benchmark.
 
 For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_expr_prediction.ipynb).
 
@@ -100,7 +100,7 @@ We run evaluations at the sample level, calculating per sample in the test set a
 
 ##### Sample Level Pearson's Correlation Coefficient For Top 20 DEGs
 
-For each sample, we calculate Pearson's $r$ between the *predicted delta* and *real delta* on the top 20 differentially expressed genes (DEGs), selecting the genes with the largest absolute *real delta*. We use K=20 at the sample level since individual samples have noisier delta estimates than perturbation-level means. Even if the predicted magnitudes are off, a high correlation indicates the model has learned the correct expression profile. We calculate:
+For each sample, we calculate Pearson's $r$ between the *predicted delta* and *real delta* on the top 20 differentially expressed genes (DEGs), selecting the genes with the largest absolute *real delta*. We use $K=20$ at the sample level since individual samples have noisier delta estimates than perturbation-level means. Even if the predicted magnitudes are off, a high correlation indicates our model has learned the correct expression profile. We calculate:
 $$
 \text{Pearson }r_{\text{sample}} = \frac{1}{N}\sum_{i=1}^{N}\frac{\sum_{k=1}^{K}(\hat{\delta}_{i,k} - \bar{\hat{\delta}}_i)(\delta_{i,k} - \bar{\delta}_i)}{\sqrt{\sum_{k=1}^{K}(\hat{\delta}_{i,k} - \bar{\hat{\delta}}_i)^{2}} \cdot \sqrt{\sum_{k=1}^{K}(\delta_{i,k} - \bar{\delta}_i)^{2}}}
 $$
@@ -181,7 +181,7 @@ We run evaluations across our perturbation expression profiles. While these eval
 
 ##### Cross Perturbation Centroid Accuracy
 
-Centroid accuracy compares each predicted delta vector against all real delta vectors to find the nearest match. For this calculation, we change how we define a unique perturbation. Since this metric cares mainly about perturbation effect, we re-group our perturbations by taking the mean expression delta across perturbations sharing the same target protein (or sequence if target is unavailable), mode, and cell type. This avoids asking the model to differentiate between different perturbations targeting the same protein. We calculate centroid accuracy as:
+We compare each predicted delta vector against all real delta vectors to find the nearest match. For this calculation, we change how we define a unique perturbation. Since this metric cares mainly about perturbation effect, we re-group our perturbations by taking the mean expression delta across perturbations sharing the same target protein (or sequence if target is unavailable), mode, and cell type. This avoids asking the model to differentiate between different perturbations targeting the same protein. We calculate centroid accuracy as:
 $$
 \text{Centroid Accuracy} = \frac{1}{G}\sum^{G}_{g=1} \mathbb{1}\left[\underset{h}{\arg\min}\, \|\hat{\delta}_{g} - \delta_{h}\|^{2}= g\right]
 $$
@@ -227,16 +227,16 @@ For each of the following evaluations, we'll explain how the calculation is done
 
 We measure whether our model correctly predicts if a differentially expressed gene is up-regulated or down-regulated. We first classify each gene's expression delta into one of three categories using a threshold:
 $$
-d(\delta_g) = \begin{cases} +1 & \text{if } \delta_g \geq \tau \\ -1 & \text{if } \delta_g \leq -\tau \\ 0 & \text{otherwise} \end{cases}
+d(\delta_k) = \begin{cases} +1 & \text{if } \delta_k \geq \tau \\ -1 & \text{if } \delta_k \leq -\tau \\ 0 & \text{otherwise} \end{cases}
 $$
 
 Where $\tau = 0.25$ is the direction threshold. We apply this classification to both our real and predicted perturbation-level mean expression deltas, then select the top 50 DEGs per perturbation based on the largest absolute real expression delta. We then compare how many of those genes the prediction classified correctly:
 
 $$
-\text{Direction Accuracy}_{topK} = \frac{1}{P \cdot K} \sum_{p=1}^{P} \sum_{g \in \mathcal{T}_p} \mathbb{1}\left[d(\hat{\delta}_{p,g}) = d(\delta_{p,g})\right]
+\text{Direction Accuracy}_{topK} = \frac{1}{P \cdot K} \sum_{p=1}^{P} \sum_{k \in \mathcal{T}_p} \mathbb{1}\left[d(\hat{\delta}_{p,k}) = d(\delta_{p,k})\right]
 $$
 
-Where $\mathcal{T}_{p}$ is the set of $K=50$ genes with largest $|\delta_{p,g}|$ for perturbation $p$. Since we select the top 50 out of 10,000 genes, we typically focus on genes with large expression changes, but perturbations with lower overall cell impact and fewer significantly moving genes make this a harder metric.
+Where $\mathcal{T}_{p}$ is the set of $K=50$ genes with largest $|\delta_{p,k}|$ for perturbation $p$. Since we select the top 50 out of 10,000 genes, we typically focus on genes with large expression changes, but perturbations with lower overall cell impact and fewer significantly moving genes make this a harder metric.
 
 |Dataset|BioJEPA-AC v0.6|
 |-|-|
@@ -248,29 +248,54 @@ Where $\mathcal{T}_{p}$ is the set of $K=50$ genes with largest $|\delta_{p,g}|$
 
 ### Uncertainty Calibration
 
-A unique output from BioJEPA-AC is it's output of not only the latent representation of a perturbed cell, mu, but also it's confidence in that representation at each $[Gene, Embedding]$, logvar.  By outputting the uncertainty, we're able to use it in conjunction with the representation to understand what parts of the cell the model is confident in and isn't.   We review this uncertainty with a series of evaluations comparing the logvar with the error in our expresison prediction and the error against the observed variance in our real data. 
+We use this eval to assess whether our model's uncertainty estimates are meaningful. BioJEPA-AC outputs both a mean and log-variance latent representation for the perturbed cell state. We average the log-variance across genes per sample as our uncertainty signal, and compute MSE between the *predicted delta* and *real delta*, also averaged across genes:
 
-##### Binned Sample Expected Calibration Error (ECE)
+$$
+\begin{aligned}
+u_s &= \frac{1}{K}\sum_{k=1}^{K} \text{logvar}_{s,k} \\
+e_s &= \frac{1}{K}\sum_{k=1}^{K} (\hat{\delta}_{s,k} - \delta_{s,k})^2
+\end{aligned}
+$$
 
-Instead of just analyzing our sample level error, we use a binning approach  
+Where $u_s$ and $e_s$ are the scalar uncertainty and MSE for sample $s$, averaged across all $K$ genes. A well-calibrated model should produce higher uncertainty for samples where it makes larger errors. These evals currently perform poorly, and we are exploring training and post-training techniques to improve calibration.
 
-| Dataset                   | BioJEPA-AC v0.6 |
-| ------------------------- | --------------- |
-| Adamson                   | 0.6511          |
-| Replogle K562 essential   | 0.3712          |
-| Replogle K562 genome-wide | 0.7072          |
-| Norman                    | 0.3275          |
-| Sciplex                   | 0.8645          |
+For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_uncertainty_calibration.ipynb).
 
-##### Perturbation Level Mean Uncertainty Pearson Correlation 
+##### Expected Calibration Error (ECE)
 
-| Dataset                   | BioJEPA-AC v0.6 |
-| ------------------------- | --------------- |
-| Adamson                   | 0.6511          |
-| Replogle K562 essential   | 0.3712          |
-| Replogle K562 genome-wide | 0.7072          |
-| Norman                    | 0.3275          |
-| Sciplex                   | 0.8645          |
+We measure calibration using ECE, which quantifies the gap between predicted uncertainty and actual error across binned samples. We first min-max normalize both uncertainty and MSE to $[0, 1]$, then partition samples into 10 equal-width bins by normalized uncertainty. We calculate ECE as:
+
+$$
+\text{ECE} = \sum_{b=1}^{10} \frac{|\mathcal{B}_b|}{N} \left| \bar{u}_b - \bar{e}_b \right|
+$$
+
+Where $\mathcal{B}_b$ is the set of samples in bin $b$, $N$ is the total number of samples, and $\bar{u}_b$, $\bar{e}_b$ are the mean normalized uncertainty and mean normalized error within bin $b$. A perfectly calibrated model achieves ECE = 0, meaning its uncertainty directly tracks its error in every bin.
+
+|Dataset|BioJEPA-AC v0.6|
+|-|-|
+| Adamson|0.1401|
+| Replogle K562 essential|0.3240|
+| Replogle K562 genome-wide|0.5964|
+| Norman|0.2098|
+| Sciplex|0.2892|
+
+##### Perturbation Level Uncertainty-Error Pearson Correlation
+
+We aggregate uncertainty and MSE to the perturbation level by taking the mean across all samples for each perturbation. We then calculate Pearson's correlation between per-perturbation mean uncertainty and mean MSE:
+
+$$
+r_{\text{unc}} = \frac{\sum_{p=1}^{P}(u_p - \bar{u})(e_p - \bar{e})}{\sqrt{\sum_{p=1}^{P}(u_p - \bar{u})^2} \cdot \sqrt{\sum_{p=1}^{P}(e_p - \bar{e})^2}}
+$$
+
+Where $u_p$ and $e_p$ are the mean uncertainty and mean MSE for perturbation $p$, already averaged over all samples of that perturbation. The bars ($\bar{u}$, $\bar{e}$) are means across perturbations for centering. Perturbation-level aggregation smooths out sample noise, so a meaningful uncertainty signal should correlate more strongly at this level than at the sample level.
+
+|Dataset|BioJEPA-AC v0.6|
+|-|-|
+| Adamson|0.0216|
+| Replogle K562 essential|0.0529|
+| Replogle K562 genome-wide|0.2662|
+| Norman|-0.0155|
+| Sciplex|-0.1781|
 
 ### Mechanism of Action Matching
 
@@ -281,15 +306,13 @@ Instead of just analyzing our sample level error, we use a binning approach
 ##### Non-additive gene MSE
 ##### Model beats additive rate
 
-##### 
-
 ### Dose Response
 ##### Dose-severity Spearman correlation
 ##### Monotonicity Score
 
 ### Other evals done but not reported on
 
-Within each category, we've done a number of other evaluations. We also have two additional categories, Perturbation Retrieval and Action Vector Pathway, that we did not report on.  Reporting and providing explanation/analysis on every eval we did would be too tedious, though, our explainer notebooks to cover how each value was calculated if you want to better understand the calculation and meaning. 
+Within each category, we run additional evaluations beyond what we report here. We also have two additional categories, Perturbation Retrieval and Action Vector Pathway, that we do not cover in this report. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
 
 # Training
 
