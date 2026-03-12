@@ -246,7 +246,34 @@ Where $\mathcal{T}_{p}$ is the set of $K=50$ genes with largest $|\delta_{p,g}|$
 | Norman|0.3275|
 | Sciplex|0.8645|
 
+### Uncertainty Calibration
+
+A unique output from BioJEPA-AC is it's output of not only the latent representation of a perturbed cell, mu, but also it's confidence in that representation at each $[Gene, Embedding]$, logvar.  By outputting the uncertainty, we're able to use it in conjunction with the representation to understand what parts of the cell the model is confident in and isn't.   We review this uncertainty with a series of evaluations comparing the logvar with the error in our expresison prediction and the error against the observed variance in our real data. 
+
+##### Binned Sample Expected Calibration Error (ECE)
+
+Instead of just analyzing our sample level error, we use a binning approach  
+
+| Dataset                   | BioJEPA-AC v0.6 |
+| ------------------------- | --------------- |
+| Adamson                   | 0.6511          |
+| Replogle K562 essential   | 0.3712          |
+| Replogle K562 genome-wide | 0.7072          |
+| Norman                    | 0.3275          |
+| Sciplex                   | 0.8645          |
+
+##### Perturbation Level Mean Uncertainty Pearson Correlation 
+
+| Dataset                   | BioJEPA-AC v0.6 |
+| ------------------------- | --------------- |
+| Adamson                   | 0.6511          |
+| Replogle K562 essential   | 0.3712          |
+| Replogle K562 genome-wide | 0.7072          |
+| Norman                    | 0.3275          |
+| Sciplex                   | 0.8645          |
+
 ### Mechanism of Action Matching
+
 ##### Within/between pathway similarity ratio
 
 ### Combination Perturbation Impact
@@ -254,9 +281,7 @@ Where $\mathcal{T}_{p}$ is the set of $K=50$ genes with largest $|\delta_{p,g}|$
 ##### Non-additive gene MSE
 ##### Model beats additive rate
 
-### Uncertainty Calibration
-##### ECE
-##### Uncertainty-error Pearsons
+##### 
 
 ### Dose Response
 ##### Dose-severity Spearman correlation
