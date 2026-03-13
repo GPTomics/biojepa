@@ -312,7 +312,7 @@ Where $u_p$ and $e_p$ are the mean uncertainty and mean MSE for perturbation $p$
 
 ### Other evals done but not reported on
 
-Within each category, we run additional evaluations beyond what we report here. We also have two additional categories, Perturbation Retrieval and Action Vector Pathway, that we do not cover in this report. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
+Within each category, we run additional evaluations beyond what we report here. We also have an additional categories, Perturbation Retrieval, that we do not cover in this report. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
 
 # Training
 

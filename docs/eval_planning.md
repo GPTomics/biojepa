@@ -58,13 +58,13 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 - `multi_pert_alignment`: Alignment quality for multi-perturbation samples
 - `target_family_probing`: Do embeddings (seq-only, target-only, fused) encode protein family?
 - `cross_modality_alignment`: Do DNA and chemical sequences targeting same protein align in action space?
+- `action_vector_pathways`: Do same-pathway perturbations have similar action vectors?
 
 **Full Model Evals** (run after stage 3 - full training):
 - `expression_prediction`: Can we predict gene expression after perturbation?
 - `gene_level_analysis`: Direction of effect + top DEG recovery
 - `perturbation_retrieval`: Given desired outcome, find the perturbation
 - `uncertainty_calibration`: Are confidence estimates meaningful?
-- `action_vector_pathways`: Do same-pathway perturbations have similar action vectors?
 - `moa_matching`: Do same-pathway perturbations produce similar predicted effects?
 - `combination_perturbation`: Multi-pert prediction quality + additive baseline comparison + GI subtype breakdown
 - `dose_response`: Dose-dependent severity scaling for chemical perturbations
@@ -1035,7 +1035,7 @@ The following evals would enable direct comparison to published SOTA numbers. So
 | uncertainty_calibration | Full | uncertainty_calibration.ipynb | Are confidence estimates meaningful? | ECE, Monotonicity |
 | batch_invariance | Pretrain | batch_invariance.ipynb | Batch vs biological signal | Invariance ratio |
 | gene_embedding_pathways | Pretrain | gene_embedding_pathways.ipynb | Pathway structure in gene embeddings | Silhouette, k-NN |
-| action_vector_pathways | Full | action_vector_pathways.ipynb | Pathway structure in action vectors | Silhouette, k-NN |
+| action_vector_pathways | Alignment | action_vector_pathways.ipynb | Pathway structure in action vectors | Silhouette, k-NN |
 | moa_matching | Full | moa_matching.ipynb | Same-pathway similarity | Within/between ratio |
 | essential_gene_prediction | Pretrain | essential_gene_prediction.ipynb | Functional importance in embeddings | Pearson r, AUROC |
 | cell_type_probing | Pretrain | evals.py | Cell state disentanglement | Macro F1, Accuracy |

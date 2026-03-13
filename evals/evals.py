@@ -691,7 +691,6 @@ def run_full_model_evals(ctx):
         'gene_level_analysis': _gene_level_analysis(ctx),
         'perturbation_retrieval': _perturbation_retrieval(ctx),
         'uncertainty_calibration': _uncertainty_calibration(ctx),
-        'action_vector_pathways': _action_vector_pathways(ctx),
         'moa_matching': _moa_matching(ctx),
         'combination_perturbation': _combination_perturbation(ctx),
         'dose_response': _dose_response(ctx),
@@ -711,6 +710,7 @@ def run_alignment_evals(ctx):
         'multi_pert_alignment': _multi_pert_alignment(ctx),
         'target_family_probing': _target_family_probing(ctx),
         'cross_modality_alignment': _cross_modality_alignment(ctx),
+        'action_vector_pathways': _action_vector_pathways(ctx),
     }
 
 
@@ -1797,7 +1797,7 @@ def _moa_matching(ctx):
 
     gene_to_pathway = {}
     for pathway, genes in pathway_libs['KEGG_2021_Human'].items():
-        if 15 <= len(genes) <= 200:
+        if 15 <= len(genes) <= 300:
             for gene in genes:
                 if gene.upper() not in gene_to_pathway:
                     gene_to_pathway[gene.upper()] = pathway
