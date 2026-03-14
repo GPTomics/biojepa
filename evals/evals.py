@@ -21,7 +21,7 @@ from scipy.spatial.distance import pdist
 import biojepa_v0_6 as model
 from dataloader_v0_6 import TrainingLoader, EvalLoader
 from .linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
-from .pathway_utils import load_pathway_annotations, map_genes_to_pathways, compute_pathway_clustering_metrics
+from .pathway_utils import load_pathway_annotations, build_gene_to_pathways, compute_multilabel_pathway_similarity
 from .linear_classifier import train_linear_classifier
 import torch.nn.functional as F
 from config_v0_6 import MAX_SEQ_DIM
@@ -76,12 +76,15 @@ HEAVY_INFERENCE_KEYS = {'sample_pred_deltas', 'sample_real_deltas', 'sample_logv
 
 
 class _RunningMeans:
-    def __init__(self, n_genes):
+    def __init__(self, n_genes, embed_dim=0):
         z = lambda: np.zeros(n_genes, dtype=np.float64)
         self._sums = defaultdict(lambda: {'pd': z(), 'rd': z(), 'pa': z(), 'ra': z(), 'ctrl': z()})
         self._counts = defaultdict(int)
+        self._embed_dim = embed_dim
+        if embed_dim > 0:
+            self._latent_sums = defaultdict(lambda: np.zeros(embed_dim, dtype=np.float64))
 
-    def add(self, key, pred_delta, real_delta, pred_abs, real_abs, control):
+    def add(self, key, pred_delta, real_delta, pred_abs, real_abs, control, latent_delta=None):
         s = self._sums[key]
         s['pd'] += pred_delta
         s['rd'] += real_delta
@@ -89,16 +92,21 @@ class _RunningMeans:
         s['ra'] += real_abs
         s['ctrl'] += control
         self._counts[key] += 1
+        if latent_delta is not None and self._embed_dim > 0:
+            self._latent_sums[key] += latent_delta
 
     def finalize(self):
         keys = list(self._sums.keys())
         def _mean(field):
             return {k: (self._sums[k][field] / self._counts[k]).astype(np.float32) for k in keys}
-        return keys, {
+        result = {
             'mean_pred_deltas': _mean('pd'), 'mean_real_deltas': _mean('rd'),
             'mean_pred_abs': _mean('pa'), 'mean_real_abs': _mean('ra'),
             'mean_control_states': _mean('ctrl'),
         }
+        if self._embed_dim > 0:
+            result['mean_latent_deltas'] = {k: (self._latent_sums[k] / self._counts[k]).astype(np.float32) for k in keys}
+        return keys, result
 
 
 def _build_multi_pert_key(all_target_idx, all_seq_idx, all_modality, all_mode, n_perts, cell_type):
@@ -358,16 +366,17 @@ class EvalContext:
     def pathway_annotations(self):
         '''Cached pathway annotations for KEGG and Reactome.'''
         if self._pathway_annotations is None:
-            self._pathway_annotations = load_pathway_annotations(['KEGG_2021_Human', 'Reactome_Pathways_2024'])
+            self._pathway_annotations = load_pathway_annotations(['KEGG_2026', 'Reactome_Pathways_2024'])
         return self._pathway_annotations
 
     @property
     def id_to_gene(self):
-        '''Cached mapping from perturbation ID to gene symbol.'''
+        '''Cached mapping from DNA perturbation seq_idx to gene symbol.'''
         if self._id_to_gene is None:
-            with open(self.paths['pert_dir'] / 'input_to_id.json') as f:
-                input_to_id = json.load(f)
-            self._id_to_gene = {pid: key.split('_')[0].upper() for key, pid in input_to_id.items()}
+            dna_path = self.paths['pert_dir'] / 'seq_banks' / 'dna_to_idx.json'
+            with open(dna_path) as f:
+                dna_to_idx = json.load(f)
+            self._id_to_gene = {idx: key.split('_')[0].upper() for key, idx in dna_to_idx.items()}
         return self._id_to_gene
 
     @property
@@ -466,11 +475,12 @@ class EvalContext:
             shard_samples = 0
             shard_idx += 1
 
-        bulk_global = _RunningMeans(N)
-        multi_pert_global = _RunningMeans(N)
+        E = self.config['embed_dim']
+        bulk_global = _RunningMeans(N, E)
+        multi_pert_global = _RunningMeans(N, E)
         multi_pert_first_seq_idx = {}
-        ds_running = defaultdict(lambda: _RunningMeans(N))
-        ct_running = defaultdict(lambda: _RunningMeans(N))
+        ds_running = defaultdict(lambda: _RunningMeans(N, E))
+        ct_running = defaultdict(lambda: _RunningMeans(N, E))
 
         sample_pert_ids, sample_target_ids, sample_pert_mods = [], [], []
         sample_mses, sample_correlations = [], []
@@ -503,6 +513,8 @@ class EvalContext:
                 pred_delta = self.decoder(z_pred_mu) - self.decoder(z_context)
                 real_delta = case_x - cont_x
                 pred_abs = torch.clamp(cont_x + pred_delta, min=0.0)
+
+            z_latent_delta = (z_pred_mu - z_context).mean(dim=1).cpu().numpy()
 
             pred_delta_np, real_delta_np = pred_delta.cpu().numpy(), real_delta.cpu().numpy()
             pred_abs_np, real_abs_np = pred_abs.cpu().numpy(), case_x.cpu().numpy()
@@ -552,22 +564,23 @@ class EvalContext:
                 sample_mses.append(sample_mse)
                 sample_correlations.append(sample_corr)
 
+                ld_i = z_latent_delta[i]
                 if n_perts_np[i] > 1:
                     mp_key = _build_multi_pert_key(all_target_idx_np[i], all_seq_idx_np[i], all_modality_np[i], all_mode_np[i], int(n_perts_np[i]), cell_type_np[i])
-                    multi_pert_global.add(mp_key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                    multi_pert_global.add(mp_key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
                     multi_pert_first_seq_idx[mp_key] = int(p_idx_np[i])
                 else:
-                    bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                    bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
 
                 ds_name = test_loader.dataset_id_to_name.get(int(ds_id_np[i]), 'unknown')
                 if n_perts_np[i] == 1:
-                    ds_running[ds_name].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                    ds_running[ds_name].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
                 ds_sample_mses[ds_name].append(sample_mse)
                 ds_sample_correlations[ds_name].append(sample_corr)
 
                 ct = int(cell_type_np[i])
                 if n_perts_np[i] == 1:
-                    ct_running[ct].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i])
+                    ct_running[ct].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
                 ct_sample_mses[ct].append(sample_mse)
                 ct_sample_correlations[ct].append(sample_corr)
 
@@ -656,7 +669,7 @@ def summarize_pretraining_evals(eval_results):
     if 'batch_invariance' in eval_results:
         summary['invariance_ratio'] = eval_results['batch_invariance'].get('invariance_ratio')
     if 'gene_embedding_pathways' in eval_results:
-        summary['kegg_silhouette'] = eval_results['gene_embedding_pathways'].get('kegg', {}).get('silhouette_score')
+        summary['kegg_similarity_ratio'] = eval_results['gene_embedding_pathways'].get('kegg', {}).get('similarity_ratio')
     if 'cell_type_probing' in eval_results:
         summary['cell_type_acc'] = eval_results['cell_type_probing'].get('metrics', {}).get('accuracy')
     if 'essential_gene_prediction' in eval_results:
@@ -842,20 +855,22 @@ def _gene_embedding_pathways(ctx):
     '''Do genes in same pathway cluster in learned embeddings?'''
     verbose = ctx.config['verbose']
     pathway_libs = ctx.pathway_annotations
+    gene_names_upper = [g.upper() for g in ctx.gene_names]
+    results = {'config': {'n_genes': len(ctx.gene_names)}}
 
-    gene_labels_kegg, pathway_to_genes_kegg = map_genes_to_pathways(ctx.gene_names, pathway_libs['KEGG_2021_Human'], min_pathway_size=15, max_pathway_size=300)
-    kegg_idx = list(set(idx for indices in pathway_to_genes_kegg.values() for idx in indices))
-    kegg_labels = [gene_labels_kegg[ctx.gene_names[i].upper()] for i in kegg_idx]
-    kegg_metrics = compute_pathway_clustering_metrics(ctx.gene_embeddings[kegg_idx], kegg_labels, min_samples_per_class=10)
+    for lib_key, lib_name in [('kegg', 'KEGG_2026'), ('reactome', 'Reactome_Pathways_2024')]:
+        gene_to_pathways = build_gene_to_pathways(pathway_libs[lib_name], min_pathway_size=15, max_pathway_size=300)
+        idx_list, labels_list = [], []
+        for i, gene in enumerate(gene_names_upper):
+            if gene in gene_to_pathways:
+                idx_list.append(i)
+                labels_list.append(gene_to_pathways[gene])
+        metrics = compute_multilabel_pathway_similarity(ctx.gene_embeddings[idx_list], labels_list, min_pathway_size=10)
+        results[lib_key] = metrics
 
-    gene_labels_react, pathway_to_genes_react = map_genes_to_pathways(ctx.gene_names, pathway_libs['Reactome_Pathways_2024'], min_pathway_size=15, max_pathway_size=300)
-    react_idx = list(set(idx for indices in pathway_to_genes_react.values() for idx in indices))
-    react_labels = [gene_labels_react[ctx.gene_names[i].upper()] for i in react_idx]
-    react_metrics = compute_pathway_clustering_metrics(ctx.gene_embeddings[react_idx], react_labels, min_samples_per_class=10)
-
-    if verbose:
-        print(f'gene_embedding_pathways: KEGG sil={kegg_metrics["silhouette_score"]:.4f}, Reactome sil={react_metrics["silhouette_score"]:.4f}')
-    return {'config': {'n_genes': len(ctx.gene_names)}, 'kegg': kegg_metrics, 'reactome': react_metrics}
+    if verbose and 'error' not in results.get('kegg', {}):
+        print(f'gene_embedding_pathways: KEGG ratio={results["kegg"]["similarity_ratio"]:.4f}')
+    return results
 
 
 def _essential_gene_prediction(ctx):
@@ -1739,25 +1754,22 @@ def _action_vector_pathways(ctx):
     '''Do perturbations targeting same pathway produce similar action vectors?'''
     pathway_libs = ctx.pathway_annotations
     inf = ctx.alignment_inference
-
-    gene_to_pathway = {}
-    for pathway, genes in pathway_libs['KEGG_2021_Human'].items():
-        if 15 <= len(genes) <= 300:
-            for gene in genes:
-                if gene.upper() not in gene_to_pathway:
-                    gene_to_pathway[gene.upper()] = pathway
+    gene_to_pathways = build_gene_to_pathways(pathway_libs['KEGG_2026'], min_pathway_size=15, max_pathway_size=300)
 
     results = {}
 
     if 'dna_actions' in inf:
         dna_actions = inf['dna_actions'].cpu().numpy()
         id_to_gene = ctx.id_to_gene
-        pert_labels = {pid: gene_to_pathway[gene] for pid, gene in id_to_gene.items() if gene in gene_to_pathway and pid < dna_actions.shape[0]}
-        if len(pert_labels) >= 10:
-            action_idx = list(pert_labels.keys())
-            metrics = compute_pathway_clustering_metrics(dna_actions[action_idx], [pert_labels[i] for i in action_idx], min_samples_per_class=5)
+        valid_idx, valid_labels = [], []
+        for pid, gene in id_to_gene.items():
+            if gene in gene_to_pathways and pid < dna_actions.shape[0]:
+                valid_idx.append(pid)
+                valid_labels.append(gene_to_pathways[gene])
+        if len(valid_idx) >= 10:
+            metrics = compute_multilabel_pathway_similarity(dna_actions[valid_idx], valid_labels, min_pathway_size=5)
             results['dna'] = metrics
-            print(f'action_vector_pathways DNA: sil={metrics.get("silhouette_score", "N/A")}')
+            print(f'action_vector_pathways DNA: ratio={metrics.get("similarity_ratio", "N/A")}')
 
     if 'chem_actions' in inf:
         chem_actions = inf['chem_actions'].cpu().numpy()
@@ -1771,22 +1783,52 @@ def _action_vector_pathways(ctx):
                 with open(gene_to_target_path) as f:
                     gene_to_target = json.load(f)
                 target_to_gene = {tidx: gene.upper() for gene, tidx in gene_to_target.items() if not gene.startswith('ENSG')}
-                chem_pert_labels = {}
+                chem_pathway_map = {}
                 for s, t in zip(chem_seq_idx, chem_target_idx):
                     if s < chem_actions.shape[0] and t in target_to_gene:
                         gene = target_to_gene[t]
-                        if gene in gene_to_pathway:
-                            chem_pert_labels[int(s)] = gene_to_pathway[gene]
-                if len(chem_pert_labels) >= 10:
-                    action_idx = list(chem_pert_labels.keys())
-                    metrics = compute_pathway_clustering_metrics(chem_actions[action_idx], [chem_pert_labels[i] for i in action_idx], min_samples_per_class=5)
+                        if gene in gene_to_pathways:
+                            s_int = int(s)
+                            if s_int not in chem_pathway_map:
+                                chem_pathway_map[s_int] = set()
+                            chem_pathway_map[s_int].update(gene_to_pathways[gene])
+                valid_idx = list(chem_pathway_map.keys())
+                valid_labels = [list(chem_pathway_map[s]) for s in valid_idx]
+                if len(valid_idx) >= 10:
+                    metrics = compute_multilabel_pathway_similarity(chem_actions[valid_idx], valid_labels, min_pathway_size=5)
                     results['chemical'] = metrics
-                    print(f'action_vector_pathways chemical: sil={metrics.get("silhouette_score", "N/A")}')
+                    print(f'action_vector_pathways chemical: ratio={metrics.get("similarity_ratio", "N/A")}')
 
     if not results:
         return {'error': 'No action vectors available for pathway analysis'}
 
-    return {'config': {'n_pathways_kegg': len(gene_to_pathway)}, 'by_modality': results}
+    return {'config': {'n_pathways_kegg': len(gene_to_pathways)}, 'by_modality': results}
+
+
+def _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, delta_key='mean_pred_deltas'):
+    valid_keys, valid_labels = [], []
+    seen_keys = set()
+    for key in inf['pert_keys']:
+        seq_idx, target_idx, modality = key[0], key[1], key[2]
+        gene = None
+        if modality == 0 and seq_idx >= 0 and seq_idx in id_to_gene:
+            gene = id_to_gene[seq_idx]
+        elif target_idx >= 0 and target_idx in target_to_gene:
+            gene = target_to_gene[target_idx]
+        if gene and gene in gene_to_pathways and key not in seen_keys:
+            valid_keys.append(key)
+            valid_labels.append(gene_to_pathways[gene])
+            seen_keys.add(key)
+
+    if len(valid_keys) < 4:
+        return {'error': f'Not enough valid perturbations ({len(valid_keys)})'}
+
+    deltas = inf.get(delta_key)
+    if deltas is None:
+        return {'error': f'{delta_key} not available'}
+
+    delta_matrix = np.array([deltas[k] for k in valid_keys])
+    return compute_multilabel_pathway_similarity(delta_matrix, valid_labels, min_pathway_size=3)
 
 
 def _moa_matching(ctx):
@@ -1794,66 +1836,32 @@ def _moa_matching(ctx):
     inf = ctx.test_inference
     pathway_libs = ctx.pathway_annotations
     id_to_gene = ctx.id_to_gene
+    gene_to_pathways = build_gene_to_pathways(pathway_libs['KEGG_2026'], min_pathway_size=15, max_pathway_size=300)
 
-    gene_to_pathway = {}
-    for pathway, genes in pathway_libs['KEGG_2021_Human'].items():
-        if 15 <= len(genes) <= 300:
-            for gene in genes:
-                if gene.upper() not in gene_to_pathway:
-                    gene_to_pathway[gene.upper()] = pathway
+    target_to_gene = {}
+    gene_to_target_path = ctx.paths['pert_dir'] / 'target_banks' / 'gene_to_target_idx.json'
+    if gene_to_target_path.exists():
+        with open(gene_to_target_path) as f:
+            gene_to_target = json.load(f)
+        target_to_gene = {tidx: gene.upper() for gene, tidx in gene_to_target.items() if not gene.startswith('ENSG')}
 
-    test_keys = set(inf['pert_keys'])
-    seq_idx_to_keys = defaultdict(list)
-    for key in test_keys:
-        seq_idx_to_keys[key[0]].append(key)
+    expr = _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_pred_deltas')
+    latent = _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_latent_deltas')
 
-    valid_keys = []
-    key_to_pathway = {}
-    for seq_idx, gene in id_to_gene.items():
-        if gene in gene_to_pathway and seq_idx in seq_idx_to_keys:
-            for key in seq_idx_to_keys[seq_idx]:
-                valid_keys.append(key)
-                key_to_pathway[key] = gene_to_pathway[gene]
+    if 'error' not in expr:
+        print(f'moa_matching expression: Within={expr["mean_within_pathway"]:.4f}, Between={expr["mean_between_pathway"]:.4f}, Gap={expr["similarity_gap"]:.4f}, Ratio={expr["similarity_ratio"]:.4f}x')
+    if 'error' not in latent:
+        print(f'moa_matching latent: Within={latent["mean_within_pathway"]:.4f}, Between={latent["mean_between_pathway"]:.4f}, Gap={latent["similarity_gap"]:.4f}, Ratio={latent["similarity_ratio"]:.4f}x')
 
-    pathway_to_keys = defaultdict(list)
-    for key in valid_keys:
-        pathway_to_keys[key_to_pathway[key]].append(key)
-    valid_pathways = {p: keys for p, keys in pathway_to_keys.items() if len(keys) >= 3}
+    by_dataset = {}
+    for ds, ds_inf in inf.get('by_dataset', {}).items():
+        if len(ds_inf.get('pert_keys', [])) > 0:
+            by_dataset[ds] = {
+                'expression': _compute_moa_matching(ds_inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_pred_deltas'),
+                'latent': _compute_moa_matching(ds_inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_latent_deltas'),
+            }
 
-    if len(valid_pathways) < 2:
-        return {'error': 'Not enough valid pathways'}
-
-    all_keys = [k for keys in valid_pathways.values() for k in keys]
-    key_to_idx = {k: i for i, k in enumerate(all_keys)}
-    delta_matrix = np.array([inf['mean_pred_deltas'][k] for k in all_keys])
-    sim_matrix = cosine_similarity(delta_matrix)
-
-    within_sims, between_sims = [], []
-    for pathway, keys in valid_pathways.items():
-        idx = [key_to_idx[k] for k in keys]
-        for i in range(len(idx)):
-            for j in range(i + 1, len(idx)):
-                within_sims.append(sim_matrix[idx[i], idx[j]])
-
-    pathways = list(valid_pathways.keys())
-    for i, p1 in enumerate(pathways):
-        for j in range(i + 1, len(pathways)):
-            p2 = pathways[j]
-            for k1 in valid_pathways[p1]:
-                for k2 in valid_pathways[p2]:
-                    between_sims.append(sim_matrix[key_to_idx[k1], key_to_idx[k2]])
-
-    within_sims, between_sims = np.array(within_sims), np.array(between_sims)
-    mean_within, mean_between = np.mean(within_sims), np.mean(between_sims)
-    ratio = mean_within / mean_between if mean_between != 0 else float('inf')
-    _, p_val = mannwhitneyu(within_sims, between_sims, alternative='greater')
-
-    print(f'moa_matching: Within={mean_within:.4f}, Between={mean_between:.4f}, Ratio={ratio:.3f}x')
-
-    return {
-        'config': {'n_pathways': len(valid_pathways), 'n_perturbations': len(all_keys)},
-        'similarity': {'mean_within_pathway': float(mean_within), 'mean_between_pathway': float(mean_between), 'similarity_ratio': float(ratio), 'mann_whitney_p': float(p_val), 'n_within_pairs': len(within_sims), 'n_between_pairs': len(between_sims)}
-    }
+    return {'expression': expr, 'latent': latent, 'by_dataset': by_dataset}
 
 
 def _compute_additive_baseline(combo_inf, single_deltas, single_gene_names, combo_to_genes, n_genes):

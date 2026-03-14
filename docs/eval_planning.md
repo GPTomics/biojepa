@@ -281,28 +281,26 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 
 | Metric | Description |
 |--------|-------------|
-| Silhouette Score (KEGG) | Clustering quality (-1 to 1) for KEGG pathways |
-| Silhouette Score (Reactome) | Clustering quality for Reactome pathways |
-| k-NN Accuracy (KEGG) | Fraction of k nearest neighbors from same pathway |
-| k-NN Accuracy (Reactome) | Same, for Reactome |
-| n_classes | Number of pathways with sufficient samples |
-| n_samples | Number of genes evaluated |
+| Similarity Ratio (KEGG) | Within-pathway / between-pathway cosine similarity |
+| Similarity Gap (KEGG) | Within minus between cosine similarity |
+| Mann-Whitney p-value | Statistical significance |
+| Same metrics for Reactome | |
+| n_pathways | Number of pathways with sufficient items |
+| n_items | Number of genes evaluated |
 
 **How to interpret**:
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Silhouette Score | > 0.05 | 0.0 - 0.05 | < 0.0 | Pathways are noisy labels; even 0.05 shows signal |
-| k-NN Accuracy | > 2x chance | 1.3-2x chance | < 1.3x chance | Chance = 1/n_pathways |
+| Similarity Ratio | > 1.1 | 1.0 - 1.1 | < 1.0 | Higher = genes in same pathway have more similar embeddings |
+| p-value | < 0.01 | 0.01 - 0.05 | > 0.05 | Statistical significance |
 
 **Interpretation guide**:
-- Pathways are imperfect labels: genes belong to multiple pathways, annotations are incomplete
-- Even modest silhouette > 0.05 indicates meaningful pathway structure
-- Negative silhouette means genes are closer to other pathways than their own
-- k-NN accuracy measures if nearest neighbors share pathway membership
+- Uses multi-label pathway assignment: genes can belong to multiple pathways
+- Pairs sharing any pathway are "within", pairs sharing none are "between"
 - Gene embeddings reflect encoder's learned gene relationships
 
-**Data requirements**: Pathway annotations via gseapy (KEGG_2021_Human, Reactome_Pathways_2024).
+**Data requirements**: Pathway annotations via gseapy (KEGG_2026, Reactome_Pathways_2024).
 
 ---
 
@@ -315,25 +313,25 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 
 | Metric | Description |
 |--------|-------------|
-| Silhouette Score (KEGG) | Clustering quality (-1 to 1) for KEGG pathways |
-| k-NN Accuracy (KEGG) | Fraction of k nearest neighbors from same pathway |
-| n_classes | Number of pathways with sufficient samples |
-| n_samples | Number of perturbations evaluated |
+| Similarity Ratio (KEGG) | Within-pathway / between-pathway cosine similarity |
+| Similarity Gap (KEGG) | Within minus between cosine similarity |
+| Mann-Whitney p-value | Statistical significance |
+| n_pathways | Number of pathways with sufficient items |
+| n_items | Number of perturbations evaluated |
 
 **How to interpret**:
 
 | Metric | Good | Average | Poor | Notes |
 |--------|------|---------|------|-------|
-| Silhouette Score | > 0.05 | 0.0 - 0.05 | < 0.0 | Pathways are noisy labels; even 0.05 shows signal |
-| k-NN Accuracy | > 2x chance | 1.3-2x chance | < 1.3x chance | Chance = 1/n_pathways |
+| Similarity Ratio | > 1.1 | 1.0 - 1.1 | < 1.0 | Higher = same-pathway perts more similar |
+| p-value | < 0.01 | 0.01 - 0.05 | > 0.05 | Statistical significance |
 
 **Interpretation guide**:
+- Uses multi-label pathway assignment: perturbations can map to multiple pathways
 - Action vectors reflect composer's learned perturbation relationships
-- Pathways are imperfect labels: perturbations can have off-target effects, annotations are incomplete
-- Even modest silhouette > 0.05 indicates meaningful biological structure
 - This tests whether the composer learns target-related features
 
-**Data requirements**: Pathway annotations via gseapy (KEGG_2021_Human).
+**Data requirements**: Pathway annotations via gseapy (KEGG_2026).
 
 ---
 
@@ -370,7 +368,7 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 - Ratio ~1.0 means the model doesn't distinguish pathway-related perturbations from unrelated ones
 - Note: This tests predictions, not embeddings - it's about whether the model's outputs respect biological structure
 
-**Data requirements**: Pathway annotations via gseapy (KEGG_2021_Human).
+**Data requirements**: Pathway annotations via gseapy (KEGG_2026).
 
 ---
 
@@ -1034,8 +1032,8 @@ The following evals would enable direct comparison to published SOTA numbers. So
 | perturbation_retrieval | Full | perturbation_retrieval.ipynb | Find perturbation from outcome | Recall@K, MRR |
 | uncertainty_calibration | Full | uncertainty_calibration.ipynb | Are confidence estimates meaningful? | ECE, Monotonicity |
 | batch_invariance | Pretrain | batch_invariance.ipynb | Batch vs biological signal | Invariance ratio |
-| gene_embedding_pathways | Pretrain | gene_embedding_pathways.ipynb | Pathway structure in gene embeddings | Silhouette, k-NN |
-| action_vector_pathways | Alignment | action_vector_pathways.ipynb | Pathway structure in action vectors | Silhouette, k-NN |
+| gene_embedding_pathways | Pretrain | gene_embedding_pathways.ipynb | Pathway structure in gene embeddings | Similarity ratio, gap, p-value |
+| action_vector_pathways | Alignment | action_vector_pathways.ipynb | Pathway structure in action vectors | Similarity ratio, gap, p-value |
 | moa_matching | Full | moa_matching.ipynb | Same-pathway similarity | Within/between ratio |
 | essential_gene_prediction | Pretrain | essential_gene_prediction.ipynb | Functional importance in embeddings | Pearson r, AUROC |
 | cell_type_probing | Pretrain | evals.py | Cell state disentanglement | Macro F1, Accuracy |

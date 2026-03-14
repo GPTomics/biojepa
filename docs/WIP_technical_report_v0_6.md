@@ -48,7 +48,7 @@ Perturbations can be targeted genetic (e.g. CRISPR) perturbations or therapeutic
 
 *Fig X. An overview of how we shift the cell state in the shared latent based on the perturbation*
 
-The action conditioned predictor is the foundation of the "AC" portion of our BioJEPA-AC model. The predictor is transformer-based with similar linear attention, SwiGLU, and RMSNorm. It differs from the cell state encoder by employing two different attention layers: cross-attention to shift the cell state based on the perturbation, and self-attention to allow the cell state to learn from itself. The predictor uses target indices to predict only a portion of the cell state representation, similar to how masked models operate. It fuses the unperturbed cell representation from the context encoder with the target tokens, then uses cross-attention to incorporate the action latents from the action composer. The predictor outputs a predicted representation of the perturbed cell state including an uncertainty estimate, each in the $[\text{token},\text{embedding}]$ space. It operates in the same shared latent space that the cell state encoder learns, and learns where to move the representation based on the perturbations.
+The action conditioned predictor is the foundation of the "AC" portion of our BioJEPA-AC model. The predictor is transformer-based with similar linear attention, SwiGLU, and RMSNorm. It differs from the cell state encoder by employing two different attention layers: cross-attention to shift the cell state based on the perturbation, and self-attention to allow the cell state to learn from itself. The predictor uses target indices to predict only a portion of the cell state representation, similar to how masked models operate. It fuses the unperturbed cell representation from the context encoder with the target tokens, then uses cross-attention to incorporate the action latents from the action composer. The predictor outputs a predicted representation of the perturbed cell state including an uncertainty estimate, each in the $[\text{token},\text{embedding}]$ space. It operates in the same shared latent space as the cell state encoder, learning where to move the representation based on the perturbations.
 
 Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_ac_predictor.ipynb) notebook for a deeper dive.
 
@@ -62,7 +62,7 @@ BioJEPA-AC's primary benefit is not creating the joint-embedding space, but bein
 
 *Fig X. Forward pass of our action conditioned network*
 
-To run evals, we take a control cell state, add up to four perturbation representations, and do a forward pass through BioJEPA-AC, generating a predicted perturbed cell state representation that we then pass to the task-specific eval. We run 8 different evals on our fully trained model.
+To run evals, we take a control cell state, add up to four perturbation representations, and do a forward pass through BioJEPA-AC, generating a predicted perturbed cell state representation that we then pass to the task-specific eval. We run 7 different evals on our fully trained model.
 
 ### Eval Heads
 
@@ -165,7 +165,7 @@ R^{2}_{\text{top 50}} = \frac{1}{P}\sum^{P}_{p=1}\left(1 - \frac{\sum_{k \in \ma
   \in \mathcal{D}_{p}}(y_{p,k} - \bar{y}_{p})^{2}}\right)
 $$
 
-Where $\mathcal{D}_{p}$ is the set of 50 genes with the largest $|\delta_{p,k}|$ for perturbation $p$, and $\bar{y}_{p} = \frac{1}{|\mathcal{D}_{p}|}\sum_{k \in \mathcal{D}_{p}} y_{p,k}$. Note that while the top-50 genes are selected by delta magnitude, $R^2$ itself is computed on absolute expression values. Since we already have the linear correlation of all genes calculated using Pearson's coefficient, we focus $R^2$ on just the top differentially expressed genes, which tests whether the model accurately captures the magnitude of expression changes at the genes most affected by the perturbation. Unlike Pearson's correlation, $R^2$ penalizes magnitude errors, so simply echoing the control state is not enough.
+Where $\mathcal{D}_{p}$ is the set of 50 genes with the largest $|\delta_{p,k}|$ for perturbation $p$, and $\bar{y}_{p} = \frac{1}{|\mathcal{D}_{p}|}\sum_{k \in \mathcal{D}_{p}} y_{p,k}$. Note that while the top-50 genes are selected by delta magnitude, $R^2$ itself is computed on absolute expression values. Since we already have the linear correlation of all genes calculated using Pearson's coefficient, we focus $R^2$ on just the top differentially expressed genes, which tests whether our model accurately captures the magnitude of expression changes at the genes most affected by the perturbation. Unlike Pearson's correlation, $R^2$ penalizes magnitude errors, so simply echoing the control state is not enough.
 
 |Dataset|BioJEPA-AC v0.6|
 |-|-|
@@ -297,9 +297,40 @@ Where $u_p$ and $e_p$ are the mean uncertainty and mean MSE for perturbation $p$
 | Norman|-0.0155|
 | Sciplex|-0.1781|
 
-### Mechanism of Action Matching
+### Mechanism of Action (MoA) Matching
 
-##### Within/between pathway similarity ratio
+We use this eval to assess whether perturbations affecting the same biological pathway produce similar changes in the latent representation and predicted expression changes. This tests whether our model has learned pathway-level biology, not individual perturbation effects alone. We map each perturbation to its target gene, assign that gene to one or more pathways using [KEGG Pathways 2026](https://maayanlab.cloud/Harmonizome/dataset/KEGG+Pathways+2026), and compute pairwise cosine similarity between the perturbation-level mean *predicted delta* vectors:
+
+$$
+\text{sim}(\hat{\delta}_i, \hat{\delta}_j) = \frac{\sum_{k=1}^{K} \hat{\delta}_{i,k} \cdot \hat{\delta}_{j,k}}{\sqrt{\sum_{k=1}^{K} \hat{\delta}_{i,k}^{2}} \cdot \sqrt{\sum_{k=1}^{K} \hat{\delta}_{j,k}^{2}}}
+$$
+
+Where $\hat{\delta}_i$ and $\hat{\delta}_j$ are the mean *predicted delta* vectors (latent delta or expressoin delta) for perturbations $i$ and $j$, and $K$ is the number of genes.
+
+For the following evaluation, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_moa_matching.ipynb).
+
+##### Within/Between Pathway Similarity Ratio
+
+We classify each pairwise similarity as *within* (the two perturbations share at least one common pathway) or *between* (no common pathway). We take the mean of each group, compute their ratio, and test for statistical significance using a Mann-Whitney U test:
+
+$$
+\begin{aligned}
+\text{ratio} &= \frac{\bar{s}_{\text{within}}}{\bar{s}_{\text{between}}} \\
+U &= \sum_{i=1}^{n_w} \sum_{j=1}^{n_b} \mathbb{1}[s_{\text{within},i} > s_{\text{between},j}] \\
+z &= \frac{U - \frac{n_w \cdot n_b}{2}}{\sqrt{\frac{n_w \cdot n_b \cdot (n_w + n_b + 1)}{12}}} \\
+p &= 1 - \Phi(z)
+\end{aligned}
+$$
+
+Where $n_w$ and $n_b$ are the number of within-pathway and between-pathway pairs, $U$ counts how many times a within-pathway similarity exceeds a between-pathway similarity, and $\Phi$ is the standard normal CDF. A ratio above 1.0 with a small $p$-value indicates our model has learned to group same-pathway perturbations with statistical significance.
+
+|Dataset|BioJEPA-AC v0.6|
+|-|-|
+| Adamson||
+| Replogle K562 essential||
+| Replogle K562 genome-wide||
+| Norman||
+| Sciplex||
 
 ### Combination Perturbation Impact
 ##### model Pearson delta vs additive baseline
@@ -312,7 +343,7 @@ Where $u_p$ and $e_p$ are the mean uncertainty and mean MSE for perturbation $p$
 
 ### Other evals done but not reported on
 
-Within each category, we run additional evaluations beyond what we report here. We also have an additional categories, Perturbation Retrieval, that we do not cover in this report. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
+Within each category, we run additional evaluations beyond what we report here. We also have an additional category, Perturbation Retrieval, that we do not cover in this report. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
 
 # Training
 
