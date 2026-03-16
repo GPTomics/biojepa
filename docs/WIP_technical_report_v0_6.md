@@ -410,5 +410,3 @@ Within each category, we run additional evaluations beyond what we report here. 
 
 
 
-# Bayesian Optimization
-
