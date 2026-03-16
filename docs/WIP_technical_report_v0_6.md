@@ -1,7 +1,5 @@
 # CURRENTLY A WIP!!
 
-
-
 # BioJEPA-AC v0.6 - A world model for cells
 
 ## Abstract
@@ -299,13 +297,13 @@ Where $u_p$ and $e_p$ are the mean uncertainty and mean MSE for perturbation $p$
 
 ### Mechanism of Action (MoA) Matching
 
-We use this eval to assess whether perturbations affecting the same biological pathway produce similar changes in the latent representation and predicted expression changes. This tests whether our model has learned pathway-level biology, not individual perturbation effects alone. We map each perturbation to its target gene, assign that gene to one or more pathways using [KEGG Pathways 2026](https://maayanlab.cloud/Harmonizome/dataset/KEGG+Pathways+2026), and compute pairwise cosine similarity between the perturbation-level mean *predicted delta* vectors:
+We use this eval to assess whether perturbations affecting the same biological pathway produce similar changes in both the latent representation and predicted expression. This tests whether our model has learned pathway-level biology, not individual perturbation effects alone. We map each perturbation to its target gene, assign that gene to one or more pathways using [KEGG Pathways 2026](https://maayanlab.cloud/Harmonizome/dataset/KEGG+Pathways+2026), and compute pairwise cosine similarity between the perturbation-level mean *predicted delta* vectors:
 
 $$
 \text{sim}(\hat{\delta}_i, \hat{\delta}_j) = \frac{\sum_{k=1}^{K} \hat{\delta}_{i,k} \cdot \hat{\delta}_{j,k}}{\sqrt{\sum_{k=1}^{K} \hat{\delta}_{i,k}^{2}} \cdot \sqrt{\sum_{k=1}^{K} \hat{\delta}_{j,k}^{2}}}
 $$
 
-Where $\hat{\delta}_i$ and $\hat{\delta}_j$ are the mean *predicted delta* vectors (latent delta or expressoin delta) for perturbations $i$ and $j$, and $K$ is the number of genes.
+Where $\hat{\delta}_i$ and $\hat{\delta}_j$ are the mean *predicted delta* vectors (latent delta or expression delta) for perturbations $i$ and $j$, and $K$ is the number of genes.
 
 For the following evaluation, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_moa_matching.ipynb).
 
@@ -332,13 +330,69 @@ Where $n_w$ and $n_b$ are the number of within-pathway and between-pathway pairs
 | Norman||
 | Sciplex||
 
-
-
 ### Combination Perturbation Impact
 
-##### model Pearson delta vs additive baseline
-##### Non-additive gene MSE
-##### Model beats additive rate
+We use this eval to assess whether our model has learned how multiple perturbations interact to shift a cell state beyond simple additive effects. We compare our model's predictions for combination perturbation samples against an *additive baseline*: the sum of each individual perturbation's real expression impact. We also use known [genetic interaction maps](https://www.nature.com/articles/s41587-023-01905-6) to analyze results across interaction subgroups. This evaluation uses only the Norman dataset, which is our only multi-perturbation dataset. We define the additive baseline as:
+
+$$
+\delta^{\text{add}}_k = \sum_{j=1}^{J} \delta^{(j)}_k
+$$
+
+Where $\delta^{(j)}_k$ is the real single-perturbation expression delta for gene $k$ of the $j$-th perturbation in the combination, and $J$ is the number of perturbations (up to 4).
+
+For the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_comb_perturbation.ipynb).
+
+##### Pearson Correlation vs Additive Baseline
+
+For each combination perturbation, we calculate Pearson's correlation between the mean *predicted delta* and mean *real delta* across all genes. We do the same between the additive baseline and the mean *real delta*, then report the mean Pearson across all combination perturbations for each. Since Pearson is magnitude-invariant and most genes change minimally, the large number of near-zero genes dominates this metric.
+
+|Metric|BioJEPA-AC v0.6|
+|-|-|
+| Model Pearson delta|0.2861|
+| Additive baseline Pearson delta|0.7814|
+
+##### Beat Rate Against Additive Baseline
+
+We calculate per-combination-perturbation MSE between the *predicted delta* and *real delta*, and between the additive baseline and *real delta*:
+
+$$
+\begin{aligned}
+\text{MSE}_{\text{model}} &= \frac{1}{K}\sum_{k=1}^{K}(\hat{\delta}_k - \delta_k)^2 \\
+\text{MSE}_{\text{additive}} &= \frac{1}{K}\sum_{k=1}^{K}(\delta^{\text{add}}_k - \delta_k)^2
+\end{aligned}
+$$
+
+We then compute the rate at which our model beats the additive baseline across all combination perturbations:
+
+$$
+\text{beat rate} = \frac{1}{C}\sum_{c=1}^{C}\mathbb{1}[\text{MSE}^{\text{model}}_c < \text{MSE}^{\text{add}}_c]
+$$
+
+Where $C$ is the number of combination perturbations. MSE is dominated by genes with large expression changes, making this metric sensitive to DEGs. A beat rate near 0 indicates the additive baseline outperforms our model on nearly all combinations.
+
+|Metric|BioJEPA-AC v0.6|
+|-|-|
+| Beat rate|0.0|
+
+##### Non-Additive Gene MSE (Top 20)
+
+We focus on genes where the real expression deviates most from the additive expectation, isolating non-additive (genetic interaction) effects. For each combination perturbation, we compute the deviation from the additive baseline and select the top 20 genes:
+
+$$
+\mathcal{N}_c = \text{top-20 genes by } |\delta_k - \delta^{\text{add}}_k|
+$$
+
+We then compute MSE between the *predicted delta* and *real delta* on these selected genes:
+
+$$
+\text{MSE}_{\text{non-add}} = \frac{1}{|\mathcal{N}_c|}\sum_{k \in \mathcal{N}_c}(\hat{\delta}_k - \delta_k)^2
+$$
+
+Where $\mathcal{N}_c$ is the set of 20 genes with the largest deviation from the additive baseline for combination $c$. This metric tests whether our model can predict expression changes at genes where genetic interactions cause the observed effect to differ from what individual perturbation effects would predict.
+
+|Metric|BioJEPA-AC v0.6|
+|-|-|
+| Non-additive top 20 MSE|0.3178|
 
 ### Dose Response
 ##### Dose-severity Spearman correlation
