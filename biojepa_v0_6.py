@@ -653,7 +653,7 @@ class BioJepa(nn.Module):
 
     def forward(self, x_control, total_control, x_case, total_case,
                 seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask,
-                mask_ratio=None):
+                mask_ratio=None, beta_nll=0.0):
         '''Full training forward with multi-perturbation support.'''
         B, N = x_control.shape
 
@@ -680,7 +680,7 @@ class BioJepa(nn.Module):
         with torch.autocast(device_type='cuda', enabled=False):
             variance = torch.exp(pred_logvar_masked)
             nll = F.gaussian_nll_loss(pred_mu_masked.float(), target_masked.float(), variance, reduction='none')
-            rec_loss = (nll * variance.detach().sqrt()).mean()
+            rec_loss = (nll * variance.detach().pow(beta_nll)).mean() if beta_nll > 0 else nll.mean()
 
         reg_loss = self.vicreg_loss(
             pred_mu.reshape(-1, self.config.embed_dim),

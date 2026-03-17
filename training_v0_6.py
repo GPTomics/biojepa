@@ -336,6 +336,12 @@ def get_mask_ratio(step, base_mask_ratio, anneal_start_step, max_steps, floor=0.
     return base_mask_ratio + (floor - base_mask_ratio) * progress
 
 
+def get_beta_nll(step, target_beta, anneal_steps):
+    if anneal_steps <= 0 or target_beta == 0:
+        return target_beta
+    return target_beta * min(1.0, step / max(1, anneal_steps))
+
+
 def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: FullTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False) -> dict:
     '''Run full action-conditioned training with multi-pert format.'''
     checkpoint_dir = Path(checkpoint_dir)
@@ -377,6 +383,11 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         anneal_start_step = max_steps
     print(f'Mask annealing: starts at step {anneal_start_step} ({base_mask_ratio:.3f} -> 0.1)')
 
+    target_beta = 0.2
+    beta_anneal_pct = 0.3
+    beta_anneal_steps = int(max_steps * beta_anneal_pct)
+    print(f'Beta-NLL: target={target_beta:.2f}, anneal steps={beta_anneal_steps}')
+
     loss_history = []
     total_epoch_loss = 0
     model.train()
@@ -384,6 +395,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
         current_mask_ratio = get_mask_ratio(step, base_mask_ratio, anneal_start_step, max_steps)
+        current_beta = get_beta_nll(step, target_beta, beta_anneal_steps)
 
         if step % 500 == 0 or last_step:
             model.eval()
@@ -400,7 +412,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
                         val_loss = model(b.control, b.control_total, b.case, b.case_total,
                                          seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
-                                         mask_ratio=current_mask_ratio)
+                                         mask_ratio=current_mask_ratio, beta_nll=current_beta)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
@@ -425,7 +437,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
             loss = model(b.control, b.control_total, b.case, b.case_total,
                          seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
-                         mask_ratio=current_mask_ratio)
+                         mask_ratio=current_mask_ratio, beta_nll=current_beta)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -435,12 +447,12 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         total_epoch_loss += loss.item()
 
         if step % 100 == 0:
-            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
+            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e} | Beta: {current_beta:.3f}')
 
         if step > 0 and (step + 1) % steps_per_epoch == 0:
             epoch = (step + 1) // steps_per_epoch
             avg_loss = total_epoch_loss / steps_per_epoch
-            print(f'=== Epoch {epoch} Done. Avg Loss: {avg_loss:.5f} | Mask: {current_mask_ratio:.3f} ===')
+            print(f'=== Epoch {epoch} Done. Avg Loss: {avg_loss:.5f} | Mask: {current_mask_ratio:.3f} | Beta: {current_beta:.3f} ===')
             total_epoch_loss = 0
 
         if last_step:
