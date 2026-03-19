@@ -394,8 +394,6 @@ Where $\mathcal{N}_c$ is the set of 20 genes with the largest deviation from the
 |-|-|
 | Non-additive top 20 MSE|0.3178|
 
-### 
-
 ### Other evals done but not reported on
 
 Within each category, we run additional evaluations beyond what we report here. We also have an additional category, Perturbation Retrieval, that we do not cover in this report. An additional category we evaluated is Dose Response. While our chemical perturbations have different dosages, we do not currently pass in dosage so the dose response evaluation is mainly to validate that the model does not understand different dosages as different perturbations. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
@@ -405,6 +403,12 @@ Within each category, we run additional evaluations beyond what we report here. 
 
 
 # Data Prep
+
+explain getting data, 
+
+models for encoding 
+
+test train split
 
 
 
