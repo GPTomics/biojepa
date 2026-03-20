@@ -1,16 +1,16 @@
 #!/usr/bin/env python
-'''Run full-model evaluation suite.'''
+'''Run composer training evaluation suite.'''
 import argparse
 import os
 from pathlib import Path
-from .evals import EvalContext, run_full_model_evals, save_report
+from .evals import EvalContext, run_composer_evals, save_report
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run full-model evaluation suite')
-    parser.add_argument('--output', default='eval_report.json', help='Output file for results')
-    parser.add_argument('--data-root', default='/Users/djemec/data/jepa/v0_6', help='Data root directory')
-    parser.add_argument('--checkpoint-root', default='/Users/djemec/data/jepa/v0_6', help='Checkpoint root directory')
+    parser = argparse.ArgumentParser(description='Run composer training evaluation suite')
+    parser.add_argument('--output', default='alignment_eval_report.json', help='Output file for results')
+    parser.add_argument('--data-root', default='/Users/djemec/data/jepa/v0_7', help='Data root directory')
+    parser.add_argument('--checkpoint-root', default='/Users/djemec/data/jepa/v0_7', help='Checkpoint root directory')
     parser.add_argument('--ref-dir', default=None, help='Reference data directory (default: $BIOJEPA_REF_DIR or <data_root>/references)')
     parser.add_argument('--num-genes', type=int, required=True, help='Number of genes in model')
     parser.add_argument('--embed-dim', type=int, required=True, help='Embedding dimension')
@@ -36,12 +36,12 @@ def main():
     }
 
     print('=' * 60)
-    print('Full-Model Evaluation Suite')
+    print('Composer Training Evaluation Suite')
     print(f'Reference directory: {ref_dir}')
     print('=' * 60)
 
     ctx = EvalContext(config=config, data_root=data_root, checkpoint_root=checkpoint_root, ref_dir=ref_dir)
-    results = run_full_model_evals(ctx)
+    results = run_composer_evals(ctx)
     save_report(results, args.output)
 
     print('\n' + '=' * 60)

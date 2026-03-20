@@ -18,13 +18,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist
 
-import biojepa_v0_6 as model
-from dataloader_v0_6 import TrainingLoader, EvalLoader
+import biojepa_v0_7 as model
+from dataloader_v0_7 import TrainingLoader, EvalLoader
 from .linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from .pathway_utils import load_pathway_annotations, build_gene_to_pathways, compute_multilabel_pathway_similarity
 from .linear_classifier import train_linear_classifier
 import torch.nn.functional as F
-from config_v0_6 import MAX_SEQ_DIM
+from config_v0_7 import MAX_SEQ_DIM, VERSION
 
 
 def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=MAX_SEQ_DIM):
@@ -198,7 +198,7 @@ class EvalContext:
                 pert_latent_dim=self.config['pert_latent_dim'], pert_mode_dim=self.config['pert_mode_dim']
             )
             self._biojepa = model.BioJepa(model_config).to(self.device)
-            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'biojepa_v0_6_full_final.pt', map_location=self.device)
+            checkpoint = torch.load(self.paths['checkpoint_dir'] / f'biojepa_{VERSION}_ac_final.pt', map_location=self.device)
             print(self._biojepa.load_state_dict(checkpoint['model']))
             self._biojepa.freeze_encoders()
             self._biojepa.eval()
@@ -212,7 +212,7 @@ class EvalContext:
             print('Loading decoder...')
             decoder_config = BenchmarkDecoderConfig(embed_dim=self.config['embed_dim'])
             self._decoder = BenchmarkDecoder(decoder_config).to(self.device)
-            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'biojepa_v0_6_decoder_final.pt', map_location=self.device)
+            checkpoint = torch.load(self.paths['checkpoint_dir'] / f'biojepa_{VERSION}_decoder_final.pt', map_location=self.device)
             self._decoder.load_state_dict(checkpoint['model'])
             self._decoder.eval()
         return self._decoder
@@ -232,7 +232,7 @@ class EvalContext:
 
     @property
     def seq_banks(self):
-        '''Load sequence embedding banks (DNA, chemical) for v0.6 dual-path alignment.'''
+        '''Load sequence embedding banks (DNA, chemical) for v0.7 dual-path alignment.'''
         if self._seq_banks is None:
             seq_banks_dir = self.paths['pert_dir'] / 'seq_banks'
             self._seq_banks = {}
@@ -253,7 +253,7 @@ class EvalContext:
 
     @property
     def target_bank(self):
-        '''Load protein target embedding bank for v0.6 dual-path alignment.'''
+        '''Load protein target embedding bank for v0.7 dual-path alignment.'''
         if self._target_bank is None:
             target_path = self.paths['pert_dir'] / 'target_banks' / 'protein_targets.npy'
             if target_path.exists():
@@ -275,7 +275,7 @@ class EvalContext:
                         'modality': data['modality'],
                         'mode': data['mode']
                     }
-                print(f'Loaded {len(self._alignment_pairs["seq_idx"])} v0.6 alignment pairs')
+                print(f'Loaded {len(self._alignment_pairs["seq_idx"])} v0.7 alignment pairs')
             elif old_path.exists():
                 with np.load(old_path) as data:
                     n_pairs = len(data['input_idx'])
@@ -285,14 +285,14 @@ class EvalContext:
                         'modality': np.zeros(n_pairs, dtype=np.int64),
                         'mode': np.zeros(n_pairs, dtype=np.int64)
                     }
-                print(f'Loaded {n_pairs} v0.5 alignment pairs (converted to v0.6 format)')
+                print(f'Loaded {n_pairs} v0.5 alignment pairs (converted to v0.7 format)')
             else:
                 raise FileNotFoundError(f'No alignment pairs found at {new_path} or {old_path}')
         return self._alignment_pairs
 
     @property
     def alignment_inference(self):
-        '''Cached action vectors for alignment evals using v0.6 dual-path architecture.
+        '''Cached action vectors for alignment evals using v0.7 dual-path architecture.
 
         Uses encode_sequence_path() for sequences and encode_target_path() for targets.
         Supports DNA and chemical modalities for sequences, protein targets only.
@@ -502,11 +502,13 @@ class EvalContext:
             seq_emb = get_seq_embeddings(batch.seq_idx, batch.modality, self.seq_banks)
             target_emb = get_target_embeddings(batch.target_idx, self.target_bank)
 
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+
             with torch.no_grad():
-                z_context = self.biojepa.student(cont_x, cont_tot, mask_idx=None)
+                z_context = self.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask)
                 action_latents = self.biojepa.composer(
                     seq_emb, target_emb, batch.modality, batch.mode,
-                    batch.has_seq, batch.has_target, pert_mask
+                    batch.has_seq, batch.has_target, pert_mask, dose=batch.dose
                 )
                 target_indices = torch.arange(N, device=self.device).expand(B, N)
                 z_pred_mu, z_pred_logvar = self.biojepa.predictor(z_context, action_latents, target_indices)
@@ -655,7 +657,7 @@ def save_report(results, output_path='eval_report.json'):
     print(f'Saved report to {report_path}')
 
 
-def summarize_pretraining_evals(eval_results):
+def summarize_encoder_evals(eval_results):
     '''Extract compact metrics dict from verbose eval results.'''
     summary = {}
     if 'perturbation_detection' in eval_results:
@@ -683,8 +685,8 @@ def summarize_pretraining_evals(eval_results):
 # ENTRY POINTS
 # =============================================================================
 
-def run_pretraining_evals(ctx):
-    '''Run pretraining (encoder-only) evaluations.'''
+def run_encoder_evals(ctx):
+    '''Run encoder training evaluations.'''
     return {
         'batch_invariance': _batch_invariance(ctx),
         'gene_embedding_pathways': _gene_embedding_pathways(ctx),
@@ -697,8 +699,8 @@ def run_pretraining_evals(ctx):
     }
 
 
-def run_full_model_evals(ctx):
-    '''Run full model evaluations.'''
+def run_ac_evals(ctx):
+    '''Run AC training evaluations.'''
     return {
         'expression_prediction': _expression_prediction(ctx),
         'gene_level_analysis': _gene_level_analysis(ctx),
@@ -710,8 +712,8 @@ def run_full_model_evals(ctx):
     }
 
 
-def run_alignment_evals(ctx):
-    '''Run alignment stage evaluations.'''
+def run_composer_evals(ctx):
+    '''Run composer training evaluations.'''
     return {
         'seq_to_target_retrieval': _seq_to_target_retrieval(ctx),
         'cross_modality_target_consistency': _cross_modality_target_consistency(ctx),
@@ -775,7 +777,8 @@ def _batch_invariance(ctx):
         for _ in tqdm(range(test_steps), desc='batch_invariance: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            all_emb.append(ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy())
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            all_emb.append(ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy())
             all_batch.append(batch.batch_id.cpu().numpy())
             all_pert.append(batch.seq_idx[:, 0].cpu().numpy())
             all_ds_ids.append(batch.dataset_id.cpu().numpy())
@@ -949,7 +952,8 @@ def _cell_type_probing(ctx):
         for _ in tqdm(range(test_steps), desc='cell_type_probing: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(emb)
             all_cell_type.append(batch.cell_type.cpu().numpy())
             all_batch_id.append(batch.batch_id.cpu().numpy())
@@ -1009,7 +1013,8 @@ def _reconstruction(ctx):
         for _ in tqdm(range(test_steps), desc='reconstruction: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).cpu().numpy()
             all_emb.append(emb)
             all_expr.append(cont_x.cpu().numpy())
 
@@ -1096,8 +1101,9 @@ def _perturbation_detection(ctx):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             case_x, case_tot = batch.case, batch.case_total
-            ctrl_z = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
-            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            ctrl_z = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
+            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             control_emb.append(ctrl_z)
             case_emb.append(case_z)
             all_ds_ids.append(batch.dataset_id.cpu().numpy())
@@ -1167,7 +1173,8 @@ def _embedding_consistency(ctx):
         for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             case_x, case_tot = batch.case, batch.case_total
-            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(case_z)
             all_seq.append(batch.seq_idx[:, 0].cpu().numpy())
             all_target.append(batch.target_idx[:, 0].cpu().numpy())
@@ -1217,7 +1224,8 @@ def _latent_space_health(ctx):
         for _ in tqdm(range(test_steps), desc='latent_space_health: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(emb)
 
     embeddings = np.concatenate(all_emb, axis=0)
@@ -2098,7 +2106,7 @@ def _dose_response(ctx):
 
 
 # =============================================================================
-# ALIGNMENT EVALS (v0.6 dual-path architecture)
+# ALIGNMENT EVALS (v0.7 dual-path architecture)
 # =============================================================================
 
 def _seq_to_target_retrieval(ctx):

@@ -9,14 +9,16 @@ TrainingBatch = namedtuple('TrainingBatch', [
     'control', 'control_total', 'case', 'case_total',
     'seq_idx', 'target_idx', 'modality', 'mode',
     'has_seq', 'has_target', 'n_perts', 'dose',
-    'batch_id', 'cell_type'
+    'batch_id', 'cell_type', 'gene_mask'
 ])
 
 EvalBatch = namedtuple('EvalBatch', TrainingBatch._fields + ('dataset_id',))
 
-AlignmentBatch = namedtuple('AlignmentBatch', ['seq_idx', 'target_idx', 'modality', 'mode'])
+ComposerBatch = namedtuple('ComposerBatch', ['seq_idx', 'target_idx', 'modality', 'mode'])
+AlignmentBatch = ComposerBatch
 
-PretrainBatch = namedtuple('PretrainBatch', ['x', 'total'])
+EncoderBatch = namedtuple('EncoderBatch', ['x', 'total', 'gene_mask'])
+PretrainBatch = EncoderBatch
 
 
 def _parse_dataset_name(shard_path, split):
@@ -162,38 +164,64 @@ class _BaseShardLoader:
             return tuple(tensors)
 
 
-class PretrainLoader(_BaseShardLoader):
+class EncoderLoader(_BaseShardLoader):
     def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
         super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
 
     def load_file(self, filename):
-        #print(f'loading {filename}')
         with np.load(filename) as data:
             x = data['x'].astype(np.float32)
             total = data['total'].astype(np.float32)
-        return x, total
+            if 'gene_mask' in data:
+                gene_mask = data['gene_mask'].astype(np.bool_)
+                gene_mask = np.broadcast_to(gene_mask, (len(x), len(gene_mask))).copy()
+            else:
+                gene_mask = np.ones(x.shape, dtype=np.bool_)
+        return x, total, gene_mask
 
     def next_batch(self):
         batch = super().next_batch()
-        return PretrainBatch(*batch)
+        return EncoderBatch(*batch)
+
+PretrainLoader = EncoderLoader
 
 
-class AlignmentLoader(_BaseShardLoader):
-    def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
+class ComposerLoader(_BaseShardLoader):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None, chemical_fraction=0.0):
+        self.chemical_fraction = chemical_fraction
         super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
 
     def load_file(self, filename):
-        #print(f'loading {filename}')
         with np.load(filename) as data:
             seq_idx = data['seq_idx'].astype(np.int64)
             target_idx = data['target_idx'].astype(np.int64)
             modality = data['modality'].astype(np.int64)
             mode = data['mode'].astype(np.int64)
+
+        if self.chemical_fraction > 0 and self.split == 'train':
+            chem_mask = modality == 2
+            n_chem = int(chem_mask.sum())
+            n_total = len(modality)
+            if n_chem > 0 and n_chem / n_total < self.chemical_fraction:
+                target_chem = int(n_total * self.chemical_fraction / (1 - self.chemical_fraction))
+                multiplier = ceil(target_chem / n_chem)
+                if multiplier > 1:
+                    chem_indices = np.where(chem_mask)[0]
+                    extra = np.tile(chem_indices, multiplier - 1)[:target_chem - n_chem]
+                    all_idx = np.concatenate([np.arange(n_total), extra])
+                    seq_idx, target_idx = seq_idx[all_idx], target_idx[all_idx]
+                    modality, mode = modality[all_idx], mode[all_idx]
+                    new_n_chem = int((modality == 2).sum())
+                    print(f'  modality balancing: {n_chem} -> {new_n_chem} chemical '
+                          f'({new_n_chem}/{len(seq_idx)} = {new_n_chem/len(seq_idx):.1%})')
+
         return seq_idx, target_idx, modality, mode
 
     def next_batch(self):
         batch = super().next_batch()
-        return AlignmentBatch(*batch)
+        return ComposerBatch(*batch)
+
+AlignmentLoader = ComposerLoader
 
 
 class TrainingLoader(_BaseShardLoader):
@@ -231,14 +259,22 @@ class TrainingLoader(_BaseShardLoader):
             has_target = data['has_target'].astype(np.bool_)
             n_perts = data['n_perts'].astype(np.int64)
             dose = data['dose'].astype(np.float32)
+            valid_dose = dose != -1.0
+            dose = np.where(valid_dose, np.log1p(np.maximum(dose, 0.0)), dose)
 
             batch_id = data['batch_id'].astype(np.int64) if 'batch_id' in data else np.zeros(len(control_x), dtype=np.int64)
             cell_type = data['cell_type'].astype(np.int64) if 'cell_type' in data else np.zeros(len(control_x), dtype=np.int64)
 
+            if 'gene_mask' in data:
+                gene_mask = data['gene_mask'].astype(np.bool_)
+                gene_mask = np.broadcast_to(gene_mask, (len(control_x), len(gene_mask))).copy()
+            else:
+                gene_mask = np.ones(control_x.shape, dtype=np.bool_)
+
         batch_id = batch_id + self._dataset_offsets.get(filename, 0)
 
         return (control_x, control_tot, case_x, case_tot, seq_idx, target_idx,
-                modality, mode, has_seq, has_target, n_perts, dose, batch_id, cell_type)
+                modality, mode, has_seq, has_target, n_perts, dose, batch_id, cell_type, gene_mask)
 
     def next_batch(self):
         batch = super().next_batch()

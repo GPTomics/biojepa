@@ -215,6 +215,12 @@ class ActionComposer(nn.Module):
         self.pool_query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
         self.pool_attn = nn.MultiheadAttention(D, num_heads=config.heads, batch_first=True)
 
+        self.siglip_bias = nn.Parameter(torch.tensor(-10.0))
+
+        self.dose_proj = nn.Sequential(nn.Linear(1, D), nn.SiLU(), nn.Linear(D, D))
+        nn.init.zeros_(self.dose_proj[2].weight)
+        nn.init.ones_(self.dose_proj[2].bias)
+
     def _encode_target(self, target_emb):
         return self.target_projector(target_emb)
 
@@ -238,8 +244,14 @@ class ActionComposer(nn.Module):
         shift = self.film_shift(mode_vecs)
         return content * (1.0 + scale) + shift
 
+    def _apply_dose(self, action, p_dose, p_mask):
+        dose_valid = (p_dose != -1.0) & p_mask
+        dose_scale = self.dose_proj(p_dose.unsqueeze(-1))
+        dose_scale = torch.where(dose_valid.unsqueeze(-1), dose_scale, torch.ones_like(dose_scale))
+        return action * dose_scale
+
     @torch.autocast('cuda', enabled=False)
-    def forward(self, seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask):
+    def forward(self, seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask, dose=None):
         '''
         Args:
             seq_emb: - sequence embeddings (padded)
@@ -287,6 +299,9 @@ class ActionComposer(nn.Module):
 
             # Apply mode conditioning
             action = self._apply_mode(content, p_mode)
+
+            if dose is not None:
+                action = self._apply_dose(action, dose[:, p], p_mask)
 
             action_latents[:, p] = action * p_mask.float().unsqueeze(-1)
 
@@ -382,9 +397,9 @@ class CellStateEncoder(nn.Module):
             nn.Linear(config.embed_dim, config.embed_dim * 2) # Output Gamma + Beta
         )
 
-        # learnable mask token, different than 0 expression
         self.mask_token = nn.Parameter(torch.randn(config.embed_dim) * 0.02)
-        
+        self.unknown_token = nn.Parameter(torch.randn(config.embed_dim) * 0.02)
+
         # Total Count Injector
         self.total_count_proj = nn.Linear(1, config.embed_dim)
 
@@ -397,8 +412,7 @@ class CellStateEncoder(nn.Module):
         nn.init.zeros_(self.film_generator[-1].weight)
         nn.init.zeros_(self.film_generator[-1].bias)
         
-    def forward(self, x_values, total_counts, mask_idx=None):
-        # 1. Project Genes
+    def forward(self, x_values, total_counts, mask_idx=None, unknown_mask=None):
         x = x_values.unsqueeze(-1)
 
         scaled_x = self.expr_scaler(x)
@@ -413,6 +427,8 @@ class CellStateEncoder(nn.Module):
 
         if mask_idx is not None:
             x = torch.where(mask_idx.unsqueeze(-1), self.mask_token, x)
+        if unknown_mask is not None:
+            x = torch.where(unknown_mask.unsqueeze(-1), self.unknown_token, x)
 
         # 3. Total Count Injection
         x_total_ct = total_counts.unsqueeze(-1)
@@ -557,6 +573,8 @@ class BioJepa(nn.Module):
         )
         self.predictor = ACPredictor(pred_conf)
 
+        self.null_action = nn.Parameter(torch.zeros(1, 1, config.pert_latent_dim))
+
         ## Pretraining
         mask_pred_conf = copy.deepcopy(enc_conf)
         mask_pred_conf.n_layer = config.n_pre_layer
@@ -576,7 +594,7 @@ class BioJepa(nn.Module):
         for p in self.predictor.parameters():
             p.requires_grad = True
 
-    def enable_pretraining_gradients(self):
+    def enable_encoder_gradients(self):
         for p in self.parameters():
             p.requires_grad = False
         for p in self.student.parameters():
@@ -584,11 +602,11 @@ class BioJepa(nn.Module):
         for p in self.masked_predictor.parameters():
             p.requires_grad = True
 
-    def vicreg_loss(self, x, y):
+    def vicreg_loss(self, x, y, return_components=False):
         x, y = x.float(), y.float()
         B = x.shape[0]
         num_features = x.shape[-1]
-        
+
         std_x = torch.sqrt(x.var(dim=0) + 0.0001)
         std_y = torch.sqrt(y.var(dim=0) + 0.0001)
         std_loss = torch.mean(F.relu(1 - std_x)) + torch.mean(F.relu(1 - std_y))
@@ -600,42 +618,56 @@ class BioJepa(nn.Module):
         cov_loss = off_diagonal(cov_x).pow_(2).sum().div(num_features) + \
                    off_diagonal(cov_y).pow_(2).sum().div(num_features)
 
-        return self.config.std_coeff * std_loss + self.config.cov_coeff * cov_loss
+        total = self.config.std_coeff * std_loss + self.config.cov_coeff * cov_loss
+        if return_components:
+            return total, {'std_loss': std_loss, 'cov_loss': cov_loss}
+        return total
 
 
-    def forward_pretrain(self, x_values, total_counts):
+    def forward_encoder(self, x_values, total_counts, gene_mask=None, context_coeff=0.0, return_components=False):
         B, N = x_values.shape
 
-        # Masking
         rand = torch.rand(B, N, device=x_values.device)
         mask_idx = rand < self.config.mask_ratio
-        
-        # Teacher Target
-        with torch.no_grad():
-            target_latents = self.teacher(x_values, total_counts)
 
-        # Student
+        unknown_mask = ~gene_mask if gene_mask is not None else None
+
+        with torch.no_grad():
+            target_latents = self.teacher(x_values, total_counts, unknown_mask=unknown_mask)
+
         x_values_student = x_values.clone()
         x_values_student[mask_idx] = 0.0
 
-        context_latents = self.student(x_values_student, total_counts, mask_idx=mask_idx)
-
-        # Predict Missing Latents
+        context_latents = self.student(x_values_student, total_counts, mask_idx=mask_idx, unknown_mask=unknown_mask)
         predicted_latents = self.masked_predictor(context_latents)
-        
-        # Loss Calculation (L1 since mask predictor is deterministic)
-        pred_masked = predicted_latents[mask_idx]
-        target_masked = target_latents[mask_idx]
-        rec_loss = F.l1_loss(pred_masked, target_masked)
 
-        reg_loss = self.vicreg_loss(
-            context_latents.reshape(-1, self.config.embed_dim), 
-            target_latents.reshape(-1, self.config.embed_dim)
+        if gene_mask is not None:
+            is_masked = mask_idx & gene_mask
+            is_context = ~mask_idx & gene_mask
+        else:
+            is_masked = mask_idx
+            is_context = ~mask_idx
+
+        rec_loss = F.l1_loss(predicted_latents[is_masked], target_latents[is_masked])
+
+        if context_coeff > 0 and is_context.any():
+            context_loss = F.mse_loss(predicted_latents[is_context], target_latents[is_context])
+        else:
+            context_loss = torch.tensor(0.0, device=x_values.device)
+
+        reg_loss, reg_components = self.vicreg_loss(
+            context_latents.reshape(-1, self.config.embed_dim),
+            target_latents.reshape(-1, self.config.embed_dim),
+            return_components=True
         )
 
-        return self.config.sim_coeff * rec_loss + reg_loss
+        total = self.config.sim_coeff * rec_loss + context_coeff * context_loss + reg_loss
 
-    def forward_alignment(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.012):
+        if return_components:
+            return total, {'l1_masked': rec_loss, 'context_l2': context_loss, **reg_components}
+        return total
+
+    def forward_composer(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.012, loss_type='infonce'):
         '''Dual-path alignment: align sequence representations with target representations.'''
         z_seq = self.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
         z_target = self.composer.encode_target_path(target_emb, mode_ids, pert_mask)
@@ -646,15 +678,19 @@ class BioJepa(nn.Module):
         z_seq = F.normalize(z_seq, dim=1)
         z_target = F.normalize(z_target, dim=1)
 
+        if loss_type == 'siglip':
+            logits = torch.matmul(z_seq, z_target.T) / temperature + self.composer.siglip_bias
+            labels = 2 * torch.eye(z_seq.shape[0], device=z_seq.device) - 1
+            return -F.logsigmoid(labels * logits).mean()
+
         logits = torch.matmul(z_seq, z_target.T) / temperature
         labels = torch.arange(logits.shape[0], device=logits.device)
-
         return F.cross_entropy(logits, labels)
 
     def forward(self, x_control, total_control, x_case, total_case,
                 seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask,
-                mask_ratio=None, beta_nll=0.0):
-        '''Full training forward with multi-perturbation support.'''
+                mask_ratio=None, beta_nll=0.0, return_components=False, p_uncond=0.0, unknown_mask=None, dose=None):
+        '''AC training forward with multi-perturbation support.'''
         B, N = x_control.shape
 
         effective_mask_ratio = mask_ratio if mask_ratio is not None else self.config.mask_ratio
@@ -662,25 +698,33 @@ class BioJepa(nn.Module):
         mask_idx = rand < effective_mask_ratio
 
         with torch.no_grad():
-            target_latents = self.teacher(x_case, total_case)
+            target_latents = self.teacher(x_case, total_case, unknown_mask=unknown_mask)
 
             x_input_student = x_control.clone()
             x_input_student[mask_idx] = 0.0
-            context_latents = self.student(x_input_student, total_control, mask_idx=mask_idx)
+            context_latents = self.student(x_input_student, total_control, mask_idx=mask_idx, unknown_mask=unknown_mask)
 
-        action_latents = self.composer(seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask)
+        action_latents = self.composer(seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask, dose=dose)
+
+        if self.training and p_uncond > 0 and torch.rand(1).item() < p_uncond:
+            action_latents = self.null_action.expand(B, action_latents.shape[1], -1)
 
         target_indices = torch.arange(N, device=x_control.device).expand(B, N)
         pred_mu, pred_logvar = self.predictor(context_latents, action_latents, target_indices)
 
-        pred_mu_masked = pred_mu[mask_idx]
-        pred_logvar_masked = pred_logvar[mask_idx]
-        target_masked = target_latents[mask_idx]
-
         with torch.autocast(device_type='cuda', enabled=False):
-            variance = torch.exp(pred_logvar_masked)
-            nll = F.gaussian_nll_loss(pred_mu_masked.float(), target_masked.float(), variance, reduction='none')
+            variance = torch.exp(pred_logvar)
+            nll = F.gaussian_nll_loss(pred_mu.float(), target_latents.float(), variance, reduction='none')
             rec_loss = (nll * variance.detach().pow(beta_nll)).mean() if beta_nll > 0 else nll.mean()
+
+        if return_components:
+            reg_loss, reg_components = self.vicreg_loss(
+                pred_mu.reshape(-1, self.config.embed_dim),
+                target_latents.reshape(-1, self.config.embed_dim),
+                return_components=True
+            )
+            total = self.config.sim_coeff * rec_loss + reg_loss
+            return total, {'nll': rec_loss, **reg_components}
 
         reg_loss = self.vicreg_loss(
             pred_mu.reshape(-1, self.config.embed_dim),
