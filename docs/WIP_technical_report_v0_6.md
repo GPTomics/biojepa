@@ -4,9 +4,7 @@
 
 ## Abstract
 
-We present an updated view on BioJEPA-AC (Biological Joint-Embedding Predictive Architecture - Action Conditioned), a joint-embedding predictive architecture that uses a shared latent space to learn cell dynamics and perturbation response.
-
-`<TO BE FINISHED AT THE END>`
+We present BioJEPA-AC v0.6 (Biological Joint-Embedding Predictive Architecture - Action Conditioned), a self-supervised model that predicts how cells respond to perturbations by learning to move cell state representations in a shared latent space ^[1]^. The architecture comprises a transformer-based cell state encoder, a dual-pathway action composer for perturbation embeddings, and a cross-attention predictor that shifts cell representations conditioned on up to four perturbations across genetic and chemical modalities. We train on ~3.5 million cells from six Perturb-seq ^[2]^ datasets covering 10,324 unique perturbations (CRISPRi, CRISPRa, and small-molecule), using a three-stage pipeline: masked latent prediction for the encoder, contrastive alignment for the composer, and action-conditioned prediction with Gaussian NLL for the predictor. `<METRICS: Insert final eval numbers once training completes>` We evaluate across seven categories spanning expression prediction, gene-level analysis, uncertainty calibration, mechanism of action matching, and combination perturbation impact.
 
 ## Model Architecture
 
@@ -16,7 +14,7 @@ We present an updated view on BioJEPA-AC (Biological Joint-Embedding Predictive 
 
 *Fig X. BioJEPA-AC v0.6 inference overview highlighting how a cell state and a perturbation are converted into mean and variance latent representations of the perturbed cell state*
 
-Our v0.6 architecture predicts a latent representation of cell state given its baseline cell state and up to 4 predefined or novel perturbations across different modalities. We represent cell states across 10,000 genes with continuous-valued expression counts that may have extreme sparsity inherent to Perturb-seq data. The architecture comprises the following modules:
+Our v0.6 architecture predicts a latent representation of cell state given its baseline cell state and up to 4 predefined or novel perturbations across different modalities. We represent cell states across 10,000 genes with continuous-valued expression counts that may have extreme sparsity inherent to Perturb-seq ^[2]^ data. The encoder and predictor share core transformer dimensions, identified via Bayesian optimization: 256-dimensional embeddings, 6 layers, 4 attention heads, and a SwiGLU MLP ratio of 4.0. The architecture comprises the following modules:
 
 * **Cell State Encoder**: A transformer-based module that maps cell states into a latent space based on relative gene expression and total cell expression. It serves as both the *Context Encoder* and *Target Encoder*.
 * **Action Composer**: A dual-pathway encoder with additive fusion and FiLM-based mode conditioning that creates a unified latent space for the embedding representations of different perturbation types.
@@ -28,7 +26,7 @@ Our v0.6 architecture predicts a latent representation of cell state given its b
 
 *Fig X. The data that creates our cell state representation in the latent space*
 
-The cell state encoder is the foundation of our joint-embedding architecture, serving as both the context encoder (student) and target encoder (teacher). The encoder is transformer-based with linear attention, SwiGLU, and RMSNorm. It uses both the count/log normalized expression counts and the sum of total expression to build our cell latent. We include the total expression sum to ensure the model can flag unviable cells that would look like "noisy" expression if we only used the normalized per-gene expression. Our cell representation lives in the $[\text{token},\text{embedding}]$ space, where tokens correspond to genes. We designed the architecture so we can expand to non-gene-based tokens. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_cell_state_encoder.ipynb) notebook for a deeper dive.
+The cell state encoder is the foundation of our joint-embedding architecture, serving as both the context encoder (student) and target encoder (teacher). The encoder is transformer-based with linear attention, SwiGLU ^[3]^, and RMSNorm. It uses both the count/log normalized expression counts and the sum of total expression to build our cell latent. We encode the total expression count using Gaussian Fourier features (scale=2.38) and apply FiLM conditioning (linear scale=0.81) for expression-dependent modulation. We include the total expression sum to ensure the model can flag unviable cells that would look like "noisy" expression if we only used the normalized per-gene expression. Our cell representation lives in the $[\text{token},\text{embedding}]$ space, where tokens correspond to genes. We designed the architecture so we can expand to non-gene-based tokens. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_cell_state_encoder.ipynb) notebook for a deeper dive.
 
 ### Action Composer
 
@@ -36,9 +34,9 @@ The cell state encoder is the foundation of our joint-embedding architecture, se
 
 *Fig X. An overview of how we merge different types of perturbations with different data into the same perturbation representation.*
 
-The action composer is a dual-pathway linear encoder that projects perturbation embeddings into a shared latent space via separate linear projections, fuses them, and applies FiLM conditioning from a learned mode embedding to encode the perturbation with mechanism awareness. Our perturbation representation ends in the $[\text{n\_perts},\text{pert\_embedding}]$ space.
+The action composer is a dual-pathway linear encoder that projects perturbation embeddings into a shared latent space via separate linear projections, fuses them, and applies FiLM ^[4]^ conditioning from a learned mode embedding to encode the perturbation with mechanism awareness. Our perturbation representation ends in the $[\text{n\_perts}, 320]$ space, with a mode embedding dimension of 64. We identified these dimensions via Bayesian optimization.
 
-Perturbations can be targeted genetic (e.g. CRISPR) perturbations or therapeutics including nucleic acids, proteins, and small molecules. We require that a perturbation has a sequence and/or target (at least one), and the mode (crispri, crispra, overexpression, knockout, inhibitor, agonist, degrader, binder, unknown). To improve flexibility and generalization, we pass the raw sequence and target representations through bio foundation models during data prep rather than feeding them directly to the composer. We rely on the action composer to learn embeddings that represent functionally similar but sequence-different perturbations, enabling expansion to unseen perturbations. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_action_composer.ipynb) notebook for a deeper dive.
+Perturbations can be targeted genetic (e.g. CRISPR) perturbations or therapeutics including nucleic acids, proteins, and small molecules. We require that a perturbation has a sequence and/or target (at least one), and the mode (crispri, crispra, overexpression, knockout, inhibitor, agonist, degrader, binder, unknown). To improve flexibility and generalization, we pass the raw sequence and target representations through bio foundation models ^[5, 6]^ during data preparation rather than feeding them directly to the composer. We rely on the action composer to learn embeddings that represent functionally similar but sequence-different perturbations, enabling expansion to unseen perturbations. Review our [explainer](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_action_composer.ipynb) notebook for a deeper dive.
 
 ### Action Conditioned Predictor
 
@@ -80,17 +78,17 @@ We also use a general purpose linear classifier for predicting input metadata an
 
 ### Eval Data Splits - Hold Out
 
-To create our hold-out datasets, we targeted an 85% / 5% / 10% train / val / test split, with actual percentages varying slightly by dataset due to cross-dataset perturbation overlap. We first used the [GEARS python package](https://github.com/snap-stanford/GEARS/tree/master) to identify the held-out train / val / test split for Replogle K562-essential. This dataset uses a 67.5% / 7.5% / 25.0% train / val / test split, which we adopted as our starting point. The split identifies unique perturbations to hold out. Starting from this, we built a hold-out perturbation list that ensures we hit 15% held-out perturbations per dataset and that those perturbations are held out across all datasets. This ensures we have no perturbation leakage, and allows a direct head-to-head comparison on the Replogle K562-essential dataset using the GEARS-defined held-out set.
+To create our hold-out datasets, we target an 85% / 5% / 10% train / val / test split, with actual percentages varying slightly by dataset due to cross-dataset perturbation overlap. We use the [GEARS python package](https://github.com/snap-stanford/GEARS/tree/master) ^[11]^ to identify the held-out train / val / test split for Replogle K562-essential ^[8]^. This dataset uses a 67.5% / 7.5% / 25.0% train / val / test split, which we adopt as our starting point. The split identifies unique perturbations to hold out. Starting from this, we build a hold-out perturbation list that ensures we hit 15% held-out perturbations per dataset and that those perturbations are held out across all datasets. This ensures we have no perturbation leakage, and allows a direct head-to-head comparison on the Replogle K562-essential dataset using the GEARS-defined held-out set.
 
 For the remaining datasets, where we extracted perturbations at random, we compare against published numbers. Where feasible, we plan to re-run comparison models on our splits.
 
 ### Expression Prediction
 
-We use this eval to measure how well our model predicts post-perturbation gene expression. High accuracy here provides interpretable insight into perturbation effects on viability and gene networks. Since most of our 10,000 genes will not change significantly for any given perturbation, predicting no change can be highly accurate. To avoid this trap, we run analyses at multiple granularities including focusing on the top 20 and top 50 differentially expressed genes.
+We use this eval to measure how well our model predicts post-perturbation gene expression. High accuracy here provides interpretable insight into perturbation effects on viability and gene networks. Since most of our 10,000 genes will not change significantly for any given perturbation, predicting no change can be highly accurate. To avoid this trap, we run analyses at multiple granularities including the top 20 and top 50 differentially expressed genes.
 
 While we've done a number of different analyses, we cover the following commonly performed evals. A major component of our expression benchmark is not looking at the raw prediction made by the linear expression decoder, but the relative prediction to the predicted control. Our baseline *real delta* is simply the observed change in expression: $\delta_g = x^{\text{case}}_g - x^{\text{ctrl}}_g$. To get our *predicted delta*, we pass both the predicted and control latent representations through the linear expression decoder and compute the difference: $\hat{\delta}_g = \hat{x}^{\text{case}}_g - \hat{x}^{\text{ctrl}}_g$. We use the predicted control expression to isolate our expression prediction into terms of BioJEPA-AC's learned latent space, ensuring that if the model learns a different baseline for the control but knows the distance to move the case cell, it can still score well. The expression deltas only work for some of our evals while others rely on absolute prediction. For our *real absolute* expression, we use the observed case expression directly. For our *predicted absolute*, we add our predicted delta to our real control: $\hat{x}^{\text{abs}}_g = x^{\text{ctrl}}_g + \hat{\delta}_g$. These four values, along with our control, form the basis of our evaluation benchmark.
 
-For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_expr_prediction.ipynb).
+For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated, see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_expr_prediction.ipynb).
 
 #### Sample Level Evaluation
 
@@ -107,11 +105,11 @@ Where $K=20$ genes are selected per sample as the largest $|\delta_{i,k}|$.
 
 |Dataset|BioJEPA-AC v0.6|
 |-|-|
-| Adamson|0.8330|
-| Replogle K562 essential|0.8473|
-| Replogle K562 genome-wide|0.8900|
-| Norman|0.7634|
-| Sciplex|0.8411|
+| Adamson ^[7]^|0.8330|
+| Replogle K562 essential ^[8]^|0.8473|
+| Replogle K562 genome-wide ^[8]^|0.8900|
+| Norman ^[9]^|0.7634|
+| Sciplex ^[10]^|0.8411|
 
 #### Perturbation Level Evaluation
 
@@ -219,7 +217,7 @@ Where $s_p$ and $\hat{s}_{p}$ are the real and predicted severity scores for per
 
 We use this eval to assess whether our model correctly identifies which genes are affected by a perturbation and in which direction. Unlike expression prediction, which measures magnitude accuracy, gene level analysis focuses on categorical behavior across differentially expressed genes. These evaluations rely on the same perturbation-level mean *real delta* and *predicted delta*.
 
-For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_gene_analysis.ipynb).
+For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated, see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_gene_analysis.ipynb).
 
 ##### Directional Accuracy For Top 50 DEGs
 
@@ -257,7 +255,7 @@ $$
 
 Where $u_s$ and $e_s$ are the scalar uncertainty and MSE for sample $s$, averaged across all $K$ genes. A well-calibrated model should produce higher uncertainty for samples where it makes larger errors. These evals currently perform poorly, and we are exploring training and post-training techniques to improve calibration.
 
-For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_uncertainty_calibration.ipynb).
+For each of the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated, see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_uncertainty_calibration.ipynb).
 
 ##### Expected Calibration Error (ECE)
 
@@ -297,7 +295,7 @@ Where $u_p$ and $e_p$ are the mean uncertainty and mean MSE for perturbation $p$
 
 ### Mechanism of Action (MoA) Matching
 
-We use this eval to assess whether perturbations affecting the same biological pathway produce similar changes in both the latent representation and predicted expression. This tests whether our model has learned pathway-level biology, not individual perturbation effects alone. We map each perturbation to its target gene, assign that gene to one or more pathways using [KEGG Pathways 2026](https://maayanlab.cloud/Harmonizome/dataset/KEGG+Pathways+2026), and compute pairwise cosine similarity between the perturbation-level mean *predicted delta* vectors:
+We use this eval to assess whether perturbations affecting the same biological pathway produce similar changes in both the latent representation and predicted expression. This tests whether our model has learned pathway-level biology, not individual perturbation effects alone. We map each perturbation to its target gene, assign that gene to one or more pathways using [KEGG Pathways 2026](https://maayanlab.cloud/Harmonizome/dataset/KEGG+Pathways+2026) ^[12]^, and compute pairwise cosine similarity between the perturbation-level mean *predicted delta* vectors:
 
 $$
 \text{sim}(\hat{\delta}_i, \hat{\delta}_j) = \frac{\sum_{k=1}^{K} \hat{\delta}_{i,k} \cdot \hat{\delta}_{j,k}}{\sqrt{\sum_{k=1}^{K} \hat{\delta}_{i,k}^{2}} \cdot \sqrt{\sum_{k=1}^{K} \hat{\delta}_{j,k}^{2}}}
@@ -305,7 +303,7 @@ $$
 
 Where $\hat{\delta}_i$ and $\hat{\delta}_j$ are the mean *predicted delta* vectors (latent delta or expression delta) for perturbations $i$ and $j$, and $K$ is the number of genes.
 
-For the following evaluation, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_moa_matching.ipynb).
+For the following evaluation, we'll explain how the calculation is done and BioJEPA-AC's performance by dataset. For a detailed breakdown on how the evaluations are calculated, see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_moa_matching.ipynb).
 
 ##### Within/Between Pathway Similarity Ratio
 
@@ -332,7 +330,7 @@ Where $n_w$ and $n_b$ are the number of within-pathway and between-pathway pairs
 
 ### Combination Perturbation Impact
 
-We use this eval to assess whether our model has learned how multiple perturbations interact to shift a cell state beyond simple additive effects. We compare our model's predictions for combination perturbation samples against an *additive baseline*: the sum of each individual perturbation's real expression impact. We also use known [genetic interaction maps](https://www.nature.com/articles/s41587-023-01905-6) to analyze results across interaction subgroups. This evaluation uses only the Norman dataset, which is our only multi-perturbation dataset. We define the additive baseline as:
+We use this eval to assess whether our model has learned how multiple perturbations interact to shift a cell state beyond simple additive effects. We compare our model's predictions for combination perturbation samples against an *additive baseline*: the sum of each individual perturbation's real expression impact. We also use known [genetic interaction maps](https://www.nature.com/articles/s41587-023-01905-6) ^[9, 11]^ to analyze results across interaction subgroups. This evaluation uses only the Norman dataset, which is our only multi-perturbation dataset. We define the additive baseline as:
 
 $$
 \delta^{\text{add}}_k = \sum_{j=1}^{J} \delta^{(j)}_k
@@ -340,7 +338,7 @@ $$
 
 Where $\delta^{(j)}_k$ is the real single-perturbation expression delta for gene $k$ of the $j$-th perturbation in the combination, and $J$ is the number of perturbations (up to 4).
 
-For the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance. For a detailed breakdown on how the evaluations are calculated see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_comb_perturbation.ipynb).
+For the following evaluations, we'll explain how the calculation is done and BioJEPA-AC's performance. For a detailed breakdown on how the evaluations are calculated, see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_eval_comb_perturbation.ipynb).
 
 ##### Pearson Correlation vs Additive Baseline
 
@@ -396,19 +394,156 @@ Where $\mathcal{N}_c$ is the set of 20 genes with the largest deviation from the
 
 ### Other evals done but not reported on
 
-Within each category, we run additional evaluations beyond what we report here. We also have an additional category, Perturbation Retrieval, that we do not cover in this report. An additional category we evaluated is Dose Response. While our chemical perturbations have different dosages, we do not currently pass in dosage so the dose response evaluation is mainly to validate that the model does not understand different dosages as different perturbations. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
+Within each category, we run additional evaluations beyond what we report here. We also have two additional categories, Perturbation Retrieval and Dose Response, that we do not cover in this report. We do not currently pass dosage to our model, so dose response mainly validates that our model does not treat different dosages as different perturbations. Our explainer notebooks detail how each metric is calculated for those interested in the full set of analyses.
 
-# Training
+## Training
 
+Our model comprises three separately trained components, each with its own loss function. Across all stages, we use OneCycleLR scheduling, which linearly warms up the learning rate from near-zero to the max over the first 5% of steps, then cosine-decays it back down to near-zero. We also reshuffle training data shards each epoch to prevent learning from sequential ordering. For a detailed breakdown of training loss, see our [explainer notebook](https://github.com/GPTomics/biojepa/blob/main/layer_explainers/explainer_training_loss.ipynb).
 
+### Cell State Encoder Training
 
-# Data Prep
+The first component we train is the cell state encoder, which serves as both the context encoder (student) and target encoder (teacher). The encoders learn a shared embedding space, and we freeze them after this stage. We train on 3,266,560 samples containing the cell expression profile across 10,000 genes and a total expression count. While we only have ~2.9M unique cells, we upsample each dataset so that no single dataset is less than 10% of the total set. This means Adamson repeats 4 times per epoch, and Replogle K562 essential and Norman each repeat 2 times per epoch. We train for 50 epochs.
 
-explain getting data, 
+We use masked training, masking 76.6% of the input data (identified via Bayesian optimization). The target encoder starts as a copy of the context encoder. During training, the student receives a masked cell state while the teacher sees the complete unmasked cell state and provides stable target latents. We update the teacher's weights using the exponential moving average of the student's weights rather than gradients, preventing representation collapse and smoothing the training signal.
 
-models for encoding 
+We use a combination of L1 loss and VICReg ^[13]^ loss. We calculate training loss as:
 
-test train split
+$$
+\mathcal{L}_{encoder} = \lambda_{sim} \cdot \underbrace{\frac{1}{n} \sum_{i=1}^{n} |y_i - \hat{y}_{i}|}_{\text{L1 reconstruction}} + \lambda_{std} \cdot \underbrace{\frac{1}{d} \sum_{j=1}^{d} \text{ReLU}(1 - \sigma_{j})}_{\text{std loss}} + \lambda_{cov} \cdot \underbrace{\frac{1}{d} \sum_{i \neq j} C_{ij}^{2}}_{\text{cov loss}}
+$$
 
+The masked predictor uses 2 transformer layers. The L1 term, weighted by $\lambda_{sim} = 40.5$, measures how accurately it reconstructs the teacher's latents at the 76.6% of masked gene positions. The std and cov terms regularize the embedding space with $\lambda_{std} = 40.5$ and $\lambda_{cov} = 1.62$: std penalizes any feature dimension whose variance drops below 1, and cov penalizes correlations between feature dimensions, together preventing representation collapse.
 
+### Action Composer Training
+
+The second component we train, which can run in parallel with the encoder, is the action composer. The composer learns a unified embedding space for perturbation modalities and modes of action. We train on 10,797 perturbations, each consisting of a sequence and target encoding. While BioJEPA-AC can handle sequence-only or target-only perturbations for inference, contrastive learning requires both, so we can only train on sequence-target pairs. We do not upsample but train for 10,000 epochs. Each perturbation is trained independently, even when datasets contain multi-perturbation samples.
+
+We identified optimal parameters using Bayesian optimization. Since our perturbation data fits in a single shard, we reshuffle samples each epoch to vary the negative pairs within each batch. During AC predictor training, we also update the composer weights at 10% of the predictor's learning rate to fine-tune based on prediction accuracy. We apply gradient clipping (norm=1.0) for stability.
+
+We use Information Noise-Contrastive Estimation (InfoNCE) ^[14]^ loss: the cross-entropy over a temperature-scaled cosine similarity matrix between the sequence and target path representations. We calculate training loss as:
+
+$$
+\mathcal{L}_{align} = -\frac{1}{B} \sum_{i=1}^{B} \log \frac{\exp(\hat{z}_{seq,i} \cdot \hat{z}_{target,i} / \tau)}{\sum_{j=1}^{B} \exp(\hat{z}_{seq,i} \cdot \hat{z}_{target,j} / \tau)}
+$$
+
+Where $\hat{z}_{seq}$ and $\hat{z}_{target}$ are L2-normalized representations from the sequence and target paths, and $\tau = 0.012$ is the temperature. The low temperature sharpens the similarity distribution, forcing the model to strongly prefer the correct pair over all other perturbations in the batch.
+
+### Action Conditioned Predictor Training
+
+After training the encoder and composer, we train the action conditioned (AC) predictor. The predictor learns to traverse the cell state latent space. We train on 3,394,560 examples consisting of the perturbation, the perturbed cell, and the control cell. While we only have ~2.5M unique pairs, we upsample each dataset so that no single dataset is less than 20% of the total set. This means Adamson repeats 7 times per epoch, Replogle K562 essential repeats 3 times, and Norman repeats 9 times per epoch. We train for 20 epochs.
+
+We freeze both encoders and train the predictor and action composer together, with the composer receiving 10% of the predictor's learning rate. We apply gradient clipping (norm=1.0) for stability. We use two annealing schedules: beta-NLL annealing ramps $\beta$ from 0 to 0.2 over the first 30% of steps, letting the model learn accurate means before being penalized for miscalibrated confidence. Mask annealing reduces the mask ratio from 76.6% down to 10% over the final 15% of training, gradually giving the predictor more context.
+
+We use a combination of beta-weighted Gaussian NLL ^[15]^ loss and VICReg ^[13]^ loss (same role as in encoder training). We calculate training loss as:
+
+$$
+\mathcal{L}_{predictor} = \lambda_{sim} \cdot \underbrace{\frac{1}{n} \sum_{i=1}^{n} \sigma_{i}^{2\beta} \cdot \frac{1}{2} \left( \log\sigma_{i}^{2} + \frac{(y_i - \mu_{i})^{2}}{\sigma_{i}^{2}} \right)}_{\beta\text{-weighted Gaussian NLL}} + \lambda_{std} \cdot \underbrace{\frac{1}{d} \sum_{j=1}^{d} \text{ReLU}(1 - \sigma_{j})}_{\text{std loss}} + \lambda_{cov} \cdot \underbrace{\frac{1}{d} \sum_{i \neq j} C_{ij}^{2}}_{\text{cov loss}}
+$$
+
+The Gaussian NLL term, weighted by $\lambda_{sim} = 40.5$, penalizes both inaccurate mean predictions and miscalibrated confidence at masked gene positions. The $\sigma_{i}^{2\beta}$ weighting down-weights high-uncertainty predictions, preventing the model from inflating variance to trivially reduce loss. Here $\sigma_i$ in the NLL term is the per-element predicted standard deviation, while $\sigma_j$ in the std loss is the standard deviation of feature dimension $j$ across the batch. The std and cov terms use the same coefficients as encoder training ($\lambda_{std} = 40.5$, $\lambda_{cov} = 1.62$).
+
+## Data Prep
+
+### Data Sources
+
+We train BioJEPA-AC on six publicly available single-cell perturbation datasets spanning three perturbation types (CRISPRi, CRISPRa, chemical), both single and multi-perturbation applications, and four cell types (K562, RPE1, A549, MCF7). Together, these provide ~3.5 million cells covering 10,324 unique perturbations. Our primary dataset is the Replogle K562 essential screen ^[8]^, which provides the GEARS-standard ^[11]^ held-out splits we use as our evaluation starting point.
+
+|Dataset|Mode & Cell Type|Total Cells|Unique Perts|Batches|Genes in 10K|Encoder Training|AC Predictor Training|
+|-|-|-|-|-|-|-|-|
+|Replogle K562 essential ^[8]^|CRISPRi K562|310,385|1,088|48|8,563|Perturbation Only|All|
+|Replogle RPE1 essential ^[8]^|CRISPRi RPE1|247,914|2,393|56|8,162|Perturbation Only|None|
+|Replogle K562 genome-wide ^[8]^|CRISPRi K562|1,989,578|9,866|267|8,248|All|All|
+|Adamson ^[7]^|CRISPRi K562|65,337|114|1|9,749|All|All|
+|Norman ^[9]^|CRISPRa K562|111,445|236|8|9,865|All|All|
+|Sciplex ^[10]^|Chemical A549, K562, MCF7|799,317|188|52|9,974|All|All|
+
+Due to data prep bugs in v0.6, both the RPE1 and K562 essential control cells were missing from encoder training, and the full RPE1 dataset was missing from AC predictor training.
+
+### Gene Universe
+
+We define a unified gene space of 10,000 genes across all datasets. Since not every dataset measures the same genes, we use a priority-based and expression level selection strategy. We start with all 8,563 genes from the Replogle K562 essential dataset. We then filter genes in the remaining datasets to those expressed in at least 10 cells, pool the candidates, and fill the remaining 1,437 positions with the most broadly expressed genes ranked by total cell count across datasets.
+
+Since the datasets measure different gene panels, we generate per-dataset gene masks that record which genes each dataset actually measured. Genes outside a dataset's panel are zero-filled in the expression vector and, currently, treated the same as no-expression genes.
+
+### Expression Normalization
+
+We normalize raw count data using counts-per-ten-thousand (CP10K) followed by log1p:
+
+$$
+\tilde{x}_g = \log\!\left(1 + \frac{x_g}{\sum_{g'=1}^{G} x_{g'}} \cdot 10{,}000\right)
+$$
+
+Where $x_g$ is the raw count for gene $g$ and $G$ is the total number of genes. This corrects for sequencing depth differences while the log transform compresses the heavy-tailed count distribution, so the loss treats high and low expression genes more equally. We also store $\log(1 + \sum_g x_g)$ as a separate total expression input to the encoder. We exclude cells from perturbations missing both sequence and target embeddings, and filter cells with fewer than 50 expressed genes.
+
+### Control Matching
+
+For each dataset, we build a control bank by identifying untreated cells (labeled as control, non-targeting, or similar) and grouping them by experimental batch. For each perturbed cell, we pair it with random control cells from its batch, or if batch is unavailable, a random control from the full pool.
+
+### Train, Validation, and Test Splits
+
+We split data by perturbation, not by cell, preventing leakage of both perturbation identity and cell state information. The holdout strategy differs by training stage: for encoder training, we withhold only the perturbed cells linked to held-out perturbations but train on all controls and non-held-out perturbed cells. For the action composer, perturbations are held out based on the same target list. For AC predictor training, the full perturbed cell, matched control cell, and perturbation are all held out.
+
+We define held-out perturbations starting from the GEARS-defined ^[11]^ split for Replogle K562 essential (734 train, 82 validation, 272 test), giving us a direct comparison to published benchmarks. For full details on the cross-dataset split strategy, see [Eval Data Splits](#eval-data-splits---hold-out).
+
+### Perturbation Embeddings
+
+We pass perturbation sequences and targets through publicly available foundation models during data preparation, producing the pre-computed embeddings our action composer takes as input.
+
+#### Sequence Embeddings
+
+For genetic perturbations, the sequence is the 20-nucleotide protospacer (guide RNA target) used in the CRISPR experiment. We embed each protospacer using the Nucleotide Transformer v3 (650M parameters) ^[5]^, producing 1,536-dimensional vectors. For CRISPRi experiments with dual-guide designs (sgID_A and sgID_B), we embed each guide separately and average. For Norman CRISPRa dual-gene perturbations, we similarly embed each gene's protospacer and average.
+
+For chemical perturbations, the sequence is the drug's SMILES string. We look up SMILES for each of the 188 Sciplex compounds via PubChem, then embed them using ChemMRL ^[16]^, producing 768-dimensional vectors that we zero-pad to 1,536 to share the sequence path with DNA embeddings.
+
+In total, we generate 11,643 DNA embeddings and 188 chemical embeddings.
+
+#### Target Embeddings
+
+The target is the protein product of the perturbed gene (for genetic perturbations) or the drug's known protein target (for chemical perturbations). If a perturbation has multiple targets, we currently take the first. We map gene identifiers to UniProt accessions via MyGene.info, retrieve protein sequences from the UniProt human proteome, and embed them using ESM-2 (8M parameters) ^[6]^, producing 320-dimensional vectors. For genes missing from UniProt, we fall back to Entrez and Ensembl protein lookups. We successfully map 9,975 of 9,985 target genes to protein sequences, with the unmapped 10 being non-coding RNA targets.
+
+#### Alignment Pairs
+
+For action composer training, we need paired (sequence, target) examples where both embeddings exist. This results in 10,710 perturbations from CRISPRi screens, 98 from Norman dual-gene, 232 from Norman CRISPRa, and 188 from Sciplex chemicals, totaling 11,228 pairs split into 10,797 train, 108 validation, and 323 test.
+
+#### Missing Embedding Handling
+
+Some perturbations lack one or both embeddings. For AC predictor training, we require either sequence or target, and the action composer handles the missing path via pass-through. We exclude the 4 perturbations missing both embeddings entirely.
+
+### Shard Generation
+
+We convert the processed data into compressed NumPy archives (shards) for streaming during training. We generate separate shards for encoder, action composer, and AC predictor training since each stage requires different data layouts. Encoder and predictor shards contain 2,560 cells each.
+
+## References
+
+[1] LeCun, Y. (2022). A Path Towards Autonomous Machine Intelligence. *Technical report*. [openreview.net](https://openreview.net/pdf?id=BZ5a1r-kVsf)
+
+[2] Dixit, A. et al. (2016). Perturb-Seq: Dissecting Molecular Circuits with Scalable Single-Cell RNA Profiling of Pooled Genetic Screens. *Cell*, 167(7), 1853-1866. [doi:10.1016/j.cell.2016.11.038](https://doi.org/10.1016/j.cell.2016.11.038)
+
+[3] Shazeer, N. (2020). GLU Variants Improve Transformer. [arXiv:2002.05202](https://arxiv.org/abs/2002.05202)
+
+[4] Perez, E. et al. (2018). FiLM: Visual Reasoning with a General Conditioning Layer. *AAAI*. [arXiv:1709.07871](https://arxiv.org/abs/1709.07871)
+
+[5] Dalla-Torre, H. et al. (2024). The Nucleotide Transformer: Building and Evaluating Robust Foundation Models for Human Genomics. *Nature Methods*. [bioRxiv:2023.01.11.523679](https://www.biorxiv.org/content/10.1101/2023.01.11.523679v1)
+
+[6] Lin, Z. et al. (2023). Evolutionary-scale prediction of atomic-level protein structure with a language model. *Science*, 379(6637), 1123-1130. [bioRxiv:2022.07.20.500902](https://www.biorxiv.org/content/10.1101/2022.07.20.500902v1)
+
+[7] Adamson, B. et al. (2016). A Multiplexed Single-Cell CRISPR Screening Platform Enables Systematic Dissection of the Unfolded Protein Response. *Cell*, 167(7), 1867-1882. [doi:10.1016/j.cell.2016.11.048](https://doi.org/10.1016/j.cell.2016.11.048)
+
+[8] Replogle, J.M. et al. (2022). Mapping information-rich genotype-phenotype landscapes with genome-scale Perturb-seq. *Cell*, 185(14), 2559-2575. [bioRxiv:2021.12.16.473013](https://www.biorxiv.org/content/10.1101/2021.12.16.473013v1)
+
+[9] Norman, T.M. et al. (2019). Exploring genetic interaction manifolds constructed from rich single-cell phenotypes. *Science*, 365(6455), 786-793. [bioRxiv:601096](https://www.biorxiv.org/content/10.1101/601096v1)
+
+[10] Srivatsan, S.R. et al. (2020). Massively multiplex chemical transcriptomics at single-cell resolution. *Science*, 367(6473), 45-51. [doi:10.1126/science.aax6234](https://doi.org/10.1126/science.aax6234)
+
+[11] Roohani, Y. et al. (2024). Predicting transcriptional outcomes of novel multigene perturbations with GEARS. *Nature Biotechnology*, 42, 927-935. [bioRxiv:2022.07.12.499735](https://www.biorxiv.org/content/10.1101/2022.07.12.499735v2)
+
+[12] Kanehisa, M. & Goto, S. (2000). KEGG: Kyoto Encyclopedia of Genes and Genomes. *Nucleic Acids Research*, 28(1), 27-30. [doi:10.1093/nar/28.1.27](https://doi.org/10.1093/nar/28.1.27)
+
+[13] Bardes, A. et al. (2022). VICReg: Variance-Invariance-Covariance Regularization for Self-Supervised Learning. *ICLR*. [arXiv:2105.04906](https://arxiv.org/abs/2105.04906)
+
+[14] van den Oord, A. et al. (2018). Representation Learning with Contrastive Predictive Coding. [arXiv:1807.03748](https://arxiv.org/abs/1807.03748)
+
+[15] Seitzer, M. et al. (2022). On the Pitfalls of Heteroscedastic Uncertainty Estimation with Probabilistic Neural Networks. *ICLR*. [arXiv:2203.09168](https://arxiv.org/abs/2203.09168)
+
+[16] Smits, T. (2025). ChemMRL: A Chemical Matryoshka Representation Learning Framework. *Model release*. [huggingface.co/Derify/ChemMRL](https://huggingface.co/Derify/ChemMRL)
 
