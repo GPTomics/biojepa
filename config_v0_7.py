@@ -26,7 +26,6 @@ class ComposerTrainingConfig:
     weight_decay: float = 0.05
     n_steps: int = None
     temperature: float = 0.012
-    loss_type: str = 'infonce'
     chemical_fraction: float = 0.0
 
 
@@ -40,6 +39,9 @@ class ACTrainingConfig:
     mask_anneal_pct: float = 0.0
     mask_anneal_floor: float = 0.0
     p_uncond: float = 0.0
+    beta_nll_target: float = 0.2
+    beta_nll_anneal_pct: float = 0.3
+    composer_lr_mult: float = 0.1
 
 
 @dataclass

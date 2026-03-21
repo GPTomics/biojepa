@@ -667,8 +667,8 @@ class BioJepa(nn.Module):
             return total, {'l1_masked': rec_loss, 'context_l2': context_loss, **reg_components}
         return total
 
-    def forward_composer(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.012, loss_type='infonce'):
-        '''Dual-path alignment: align sequence representations with target representations.'''
+    def forward_composer(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.012):
+        '''Dual-path alignment: align sequence representations with target representations (SigLIP loss).'''
         z_seq = self.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
         z_target = self.composer.encode_target_path(target_emb, mode_ids, pert_mask)
 
@@ -678,14 +678,9 @@ class BioJepa(nn.Module):
         z_seq = F.normalize(z_seq, dim=1)
         z_target = F.normalize(z_target, dim=1)
 
-        if loss_type == 'siglip':
-            logits = torch.matmul(z_seq, z_target.T) / temperature + self.composer.siglip_bias
-            labels = 2 * torch.eye(z_seq.shape[0], device=z_seq.device) - 1
-            return -F.logsigmoid(labels * logits).mean()
-
-        logits = torch.matmul(z_seq, z_target.T) / temperature
-        labels = torch.arange(logits.shape[0], device=logits.device)
-        return F.cross_entropy(logits, labels)
+        logits = torch.matmul(z_seq, z_target.T) / temperature + self.composer.siglip_bias
+        labels = 2 * torch.eye(z_seq.shape[0], device=z_seq.device) - 1
+        return -F.logsigmoid(labels * logits).mean()
 
     def forward(self, x_control, total_control, x_case, total_case,
                 seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask,

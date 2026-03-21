@@ -190,6 +190,31 @@ class ComposerLoader(_BaseShardLoader):
     def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None, chemical_fraction=0.0):
         self.chemical_fraction = chemical_fraction
         super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
+        if chemical_fraction > 0 and split == 'train':
+            print(f'  modality balancing: target chemical_fraction={chemical_fraction:.0%}')
+            if total_samples is None:
+                self.total_samples = self._count_total_with_balancing()
+                print(f'  adjusted total_samples={self.total_samples} (from {len(self.shards)} shards)')
+
+    def _count_total_with_balancing(self):
+        total = 0
+        for shard_path in self.shards:
+            with np.load(shard_path) as data:
+                modality = data['modality']
+            n_total = len(modality)
+            chem_mask = modality == 2
+            n_chem = int(chem_mask.sum())
+            if n_chem > 0 and n_chem / n_total < self.chemical_fraction:
+                target_chem = int(n_total * self.chemical_fraction / (1 - self.chemical_fraction))
+                multiplier = ceil(target_chem / n_chem)
+                if multiplier > 1:
+                    extra = min((multiplier - 1) * n_chem, target_chem - n_chem)
+                    total += n_total + extra
+                else:
+                    total += n_total
+            else:
+                total += n_total
+        return total
 
     def load_file(self, filename):
         with np.load(filename) as data:
@@ -211,9 +236,6 @@ class ComposerLoader(_BaseShardLoader):
                     all_idx = np.concatenate([np.arange(n_total), extra])
                     seq_idx, target_idx = seq_idx[all_idx], target_idx[all_idx]
                     modality, mode = modality[all_idx], mode[all_idx]
-                    new_n_chem = int((modality == 2).sum())
-                    print(f'  modality balancing: {n_chem} -> {new_n_chem} chemical '
-                          f'({new_n_chem}/{len(seq_idx)} = {new_n_chem/len(seq_idx):.1%})')
 
         return seq_idx, target_idx, modality, mode
 

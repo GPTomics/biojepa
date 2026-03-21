@@ -917,9 +917,12 @@ The following evals would enable direct comparison to published SOTA numbers. So
 - Tests monotonic severity scaling: does higher dose -> greater predicted effect?
 
 **Metrics**:
-- `severity_dose_spearman`: Rank correlation between dose and predicted severity (per drug, averaged)
-- `monotonic_fraction`: Fraction of drugs where severity increases monotonically with dose
-- `n_drugs_evaluated`: Number of drugs with 3+ dose levels
+- `monotonicity_score`: Fraction of dose pairs where predicted severity increases monotonically
+- `real_monotonicity_score`: Same for real deltas (ground truth sanity check)
+- `dose_severity_spearman`: Rank correlation between dose and predicted severity
+- `real_dose_severity_spearman`: Same for real deltas
+- `curve_similarity`: Mean per-drug Pearson between predicted and real severity curves across dose levels
+- `pred_vs_real_by_dose`: Per dose level, Pearson between predicted and real severity across drugs
 
 **Story**: Dose-response is critical for drug development. If BioJEPA captures this without explicit dose modeling, it suggests the action space encodes mechanistic information.
 
@@ -961,6 +964,8 @@ The following evals would enable direct comparison to published SOTA numbers. So
 **non_additive_gene_mse**: For the top 20 genes per combo that deviate most from additivity (|real_delta - additive_delta| largest), reports model MSE and Pearson. Tests whether the model captures the interaction-specific genes.
 
 **gi_subtype**: Loads GEARS genetic interaction labels (88 combos, 8 types: neomorphic, additive, epistasis, redundant, potentiation, synergy_similar_pheno, synergy_dissimilar_pheno, suppressor). Reports per-subtype: model_mse, additive_mse, interaction_pearson (correlation between predicted and real interaction effects = delta minus additive). Requires `norman_gi_subtypes.json` (in reference_data/norman/).
+
+**generalization_splits**: Stratifies Norman combo results by 0/1/2 unseen component genes (standard GEARS/AttentionPert benchmark). Maps each combo's genes to training set singles from `dataset_splits.json`. Per split: MSE (all genes), MSE (top-20 DEGs), Pearson delta (all genes), and additive baseline metrics where available. Requires `dataset_splits.json`.
 
 **Story**: BioJEPA is the only model that natively handles multi-pert (up to 4). This unique capability should translate to better combination predictions. GEARS and scLAMBDA approximate combinations via graph edges, but BioJEPA processes them jointly.
 

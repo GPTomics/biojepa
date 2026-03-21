@@ -300,8 +300,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
     else:
         raise ValueError('Either epochs or n_steps must be specified')
     print(f'Composer training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
-    if cfg.loss_type == 'siglip':
-        print(f'Using SigLIP loss (bias init: {model.composer.siglip_bias.item():.1f})')
+    print(f'SigLIP loss (bias init: {model.composer.siglip_bias.item():.1f})')
 
     for p in model.parameters():
         p.requires_grad = False
@@ -332,7 +331,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
                     pert_mask = torch.ones(B, 1, dtype=torch.bool, device=device)
 
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        val_loss = model.forward_composer(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature, loss_type=cfg.loss_type)
+                        val_loss = model.forward_composer(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
@@ -351,7 +350,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
 
         optimizer.zero_grad()
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-            loss = model.forward_composer(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature, loss_type=cfg.loss_type)
+            loss = model.forward_composer(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
         loss.backward()
         optimizer.step()
         scheduler.step()
@@ -361,8 +360,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
         if writer:
             writer.add_scalar('loss/train', loss.item(), step)
             writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
-            if cfg.loss_type == 'siglip':
-                writer.add_scalar('siglip_bias', model.composer.siglip_bias.item(), step)
+            writer.add_scalar('siglip_bias', model.composer.siglip_bias.item(), step)
 
         if step % 100 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
@@ -409,6 +407,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
         p.requires_grad = True
     for p in model.composer.parameters():
         p.requires_grad = True
+    model.null_action.requires_grad = True
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
     if cfg.epochs is not None:
@@ -421,11 +420,11 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
 
     optimizer = torch.optim.AdamW([
         {'params': model.predictor.parameters(), 'lr': cfg.predictor_lr},
-        {'params': list(model.composer.parameters()) + [model.null_action], 'lr': cfg.predictor_lr * 0.1}
+        {'params': list(model.composer.parameters()) + [model.null_action], 'lr': cfg.predictor_lr * cfg.composer_lr_mult}
     ], weight_decay=cfg.weight_decay, fused=fused)
 
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=[cfg.predictor_lr, cfg.predictor_lr * 0.1], total_steps=max_steps, pct_start=0.05
+        optimizer, max_lr=[cfg.predictor_lr, cfg.predictor_lr * cfg.composer_lr_mult], total_steps=max_steps, pct_start=0.05
     )
 
     base_mask_ratio = model.config.mask_ratio
@@ -437,8 +436,8 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
         anneal_start_step = max_steps
     print(f'Mask annealing: starts at step {anneal_start_step} ({base_mask_ratio:.3f} -> {cfg.mask_anneal_floor:.3f})')
 
-    target_beta = 0.2
-    beta_anneal_pct = 0.3
+    target_beta = cfg.beta_nll_target
+    beta_anneal_pct = cfg.beta_nll_anneal_pct
     beta_anneal_steps = int(max_steps * beta_anneal_pct)
     print(f'Beta-NLL: target={target_beta:.2f}, anneal steps={beta_anneal_steps}')
     if cfg.p_uncond > 0:
