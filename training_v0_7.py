@@ -143,8 +143,9 @@ def run_encoder_training(model, train_loader, val_loader, cfg: EncoderTrainingCo
     else:
         raise ValueError('Either epochs or n_steps must be specified')
     print(f'Encoder training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
-    model.enable_all_gradients()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
+    model.enable_encoder_gradients()
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
 
     phase2_start_step = int(max_steps * cfg.phase2_start_pct)
     warmup_steps = int(max_steps * cfg.warmup_pct)
@@ -203,7 +204,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg: EncoderTrainingCo
             else:
                 loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 1.0)
         optimizer.step()
 
         if cfg.ema_final_momentum is not None and step >= phase2_start_step:
@@ -300,7 +301,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
     else:
         raise ValueError('Either epochs or n_steps must be specified')
     print(f'Composer training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
-    print(f'SigLIP loss (bias init: {model.composer.siglip_bias.item():.1f})')
+    print(f'InfoNCE loss (temperature: {cfg.temperature})')
 
     for p in model.parameters():
         p.requires_grad = False
@@ -360,7 +361,6 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
         if writer:
             writer.add_scalar('loss/train', loss.item(), step)
             writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
-            writer.add_scalar('siglip_bias', model.composer.siglip_bias.item(), step)
 
         if step % 100 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
@@ -403,11 +403,14 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
     fused = use_fused_optimizer and torch.cuda.is_available()
 
     model.freeze_encoders()
+    for p in model.masked_predictor.parameters():
+        p.requires_grad = False
     for p in model.predictor.parameters():
         p.requires_grad = True
     for p in model.composer.parameters():
         p.requires_grad = True
     model.null_action.requires_grad = True
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
     if cfg.epochs is not None:
@@ -503,7 +506,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
                              seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
                              mask_ratio=current_mask_ratio, beta_nll=current_beta, p_uncond=cfg.p_uncond, unknown_mask=unknown_mask, dose=b.dose)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 1.0)
         optimizer.step()
         scheduler.step()
 

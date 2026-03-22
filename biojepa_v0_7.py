@@ -215,8 +215,6 @@ class ActionComposer(nn.Module):
         self.pool_query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
         self.pool_attn = nn.MultiheadAttention(D, num_heads=config.heads, batch_first=True)
 
-        self.siglip_bias = nn.Parameter(torch.tensor(-10.0))
-
         self.dose_proj = nn.Sequential(nn.Linear(1, D), nn.SiLU(), nn.Linear(D, D))
         nn.init.zeros_(self.dose_proj[2].weight)
         nn.init.ones_(self.dose_proj[2].bias)
@@ -593,6 +591,7 @@ class BioJepa(nn.Module):
             p.requires_grad = True
         for p in self.predictor.parameters():
             p.requires_grad = True
+        self.student.fourier_projection.B.requires_grad = False
 
     def enable_encoder_gradients(self):
         for p in self.parameters():
@@ -601,6 +600,7 @@ class BioJepa(nn.Module):
             p.requires_grad = True
         for p in self.masked_predictor.parameters():
             p.requires_grad = True
+        self.student.fourier_projection.B.requires_grad = False
 
     def vicreg_loss(self, x, y, return_components=False):
         x, y = x.float(), y.float()
@@ -668,7 +668,7 @@ class BioJepa(nn.Module):
         return total
 
     def forward_composer(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.012):
-        '''Dual-path alignment: align sequence representations with target representations (SigLIP loss).'''
+        '''Dual-path alignment: align sequence representations with target representations (seq-to-target InfoNCE).'''
         z_seq = self.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
         z_target = self.composer.encode_target_path(target_emb, mode_ids, pert_mask)
 
@@ -678,9 +678,9 @@ class BioJepa(nn.Module):
         z_seq = F.normalize(z_seq, dim=1)
         z_target = F.normalize(z_target, dim=1)
 
-        logits = torch.matmul(z_seq, z_target.T) / temperature + self.composer.siglip_bias
-        labels = 2 * torch.eye(z_seq.shape[0], device=z_seq.device) - 1
-        return -F.logsigmoid(labels * logits).mean()
+        logits = torch.matmul(z_seq, z_target.T) / temperature
+        labels = torch.arange(z_seq.shape[0], device=z_seq.device)
+        return F.cross_entropy(logits, labels)
 
     def forward(self, x_control, total_control, x_case, total_case,
                 seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask,
