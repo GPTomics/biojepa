@@ -431,10 +431,8 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
     )
 
     base_mask_ratio = model.config.mask_ratio
-    total_epochs = max_steps // steps_per_epoch
     if cfg.mask_anneal_pct > 0:
-        anneal_epochs = max(1, int(total_epochs * cfg.mask_anneal_pct))
-        anneal_start_step = (total_epochs - anneal_epochs) * steps_per_epoch
+        anneal_start_step = max(0, int(max_steps * (1 - cfg.mask_anneal_pct)))
     else:
         anneal_start_step = max_steps
     print(f'Mask annealing: starts at step {anneal_start_step} ({base_mask_ratio:.3f} -> {cfg.mask_anneal_floor:.3f})')
@@ -565,6 +563,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
         max_steps = cfg.n_steps
     else:
         raise ValueError('Either epochs or n_steps must be specified')
+    print(f'Decoder training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
 
     optimizer = torch.optim.AdamW(decoder.parameters(), lr=cfg.lr, fused=fused)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05)

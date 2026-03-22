@@ -32,7 +32,7 @@ def _parse_dataset_name(shard_path, split):
 
 
 class _BaseShardLoader:
-    def __init__(self, batch_size, split, data_dir, device, total_samples=None, min_dataset_fraction=0.1, seed=None):
+    def __init__(self, batch_size, split, data_dir, device, total_samples=None, min_dataset_fraction=0.2, seed=None):
         self.batch_size = batch_size
         self.split = split
         self.device = device
