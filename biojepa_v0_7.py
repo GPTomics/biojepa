@@ -422,6 +422,7 @@ class CellStateEncoder(nn.Module):
         gamma, beta = torch.chunk(fourier_x, 2, dim=-1)
 
         x = scaled_x * (1.0 + gamma) + beta
+        x = self.gene_embeddings.unsqueeze(0) + x
 
         if mask_idx is not None:
             x = torch.where(mask_idx.unsqueeze(-1), self.mask_token, x)

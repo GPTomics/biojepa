@@ -1587,7 +1587,7 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     return result
 
 
-def _perturbation_retrieval(ctx, n_eval=1000):
+def _perturbation_retrieval(ctx, n_eval=200):
     '''Given desired outcome, can we find the right perturbation?'''
     inf = ctx.test_inference
     pert_keys = inf['pert_keys']
@@ -1755,10 +1755,14 @@ def _compute_uncertainty_calibration(inf, n_bins):
 
     pert_unc_arr = np.array([np.mean(sample_unc[pert_groups[p]]) for p in pert_groups])
     pert_err_arr = np.array([np.mean(sample_mse[pert_groups[p]]) for p in pert_groups])
-    r, _ = pearsonr(pert_unc_arr, pert_err_arr)
-    pert_pearson = 0.0 if np.isnan(r) else float(r)
-    r, _ = spearmanr(pert_unc_arr, pert_err_arr)
-    pert_spearman = 0.0 if np.isnan(r) else float(r)
+    if len(pert_groups) >= 2:
+        r, _ = pearsonr(pert_unc_arr, pert_err_arr)
+        pert_pearson = 0.0 if np.isnan(r) else float(r)
+        r, _ = spearmanr(pert_unc_arr, pert_err_arr)
+        pert_spearman = 0.0 if np.isnan(r) else float(r)
+    else:
+        pert_pearson = 0.0
+        pert_spearman = 0.0
 
     # Variance prediction R²
     variance_r2s = []
