@@ -18,13 +18,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist
 
-import biojepa_v0_6 as model
-from dataloader_v0_6 import TrainingLoader, EvalLoader
+import biojepa_v0_7 as model
+from dataloader_v0_7 import TrainingLoader, EvalLoader
 from .linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from .pathway_utils import load_pathway_annotations, build_gene_to_pathways, compute_multilabel_pathway_similarity
 from .linear_classifier import train_linear_classifier
 import torch.nn.functional as F
-from config_v0_6 import MAX_SEQ_DIM
+from config_v0_7 import MAX_SEQ_DIM, VERSION
 
 
 def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=MAX_SEQ_DIM):
@@ -163,6 +163,7 @@ class EvalContext:
         self._norman_single_gene_deltas = None
         self._norman_combo_mapping = None
         self._norman_gi_subtypes = None
+        self._dataset_splits = None
 
     @classmethod
     def from_trained_model(cls, biojepa_model, data_root, ref_dir, config, decoder=None):
@@ -181,7 +182,7 @@ class EvalContext:
     def _get_paths(self, data_root, checkpoint_root, ref_dir):
         return {
             'data_dir': data_root,
-            'train_dir': data_root / 'training',
+            'train_dir': data_root / 'predictor_t',
             'checkpoint_dir': checkpoint_root / 'checkpoints',
             'pert_dir': data_root / 'pert_embd',
             'ref_dir': ref_dir
@@ -190,16 +191,36 @@ class EvalContext:
     @property
     def biojepa(self):
         if self._biojepa is None:
+            if 'checkpoint_path' not in self.config:
+                raise ValueError('checkpoint_path required in config to load model from disk. '
+                                 'For mid-training evals, inject model via eval_ctx._biojepa = model instead.')
             print('Loading BioJEPA model...')
             torch.set_float32_matmul_precision('high')
             model_config = model.BioJepaConfig(
-                num_genes=self.config['num_genes'], n_layer=self.config['n_layer'], heads=self.config['heads'],
-                embed_dim=self.config['embed_dim'], n_pre_layer=self.config['n_layer'],
-                pert_latent_dim=self.config['pert_latent_dim'], pert_mode_dim=self.config['pert_mode_dim']
+                num_genes=self.config['num_genes'],
+                n_layer=self.config['n_layer'],
+                heads=self.config['heads'],
+                embed_dim=self.config['embed_dim'],
+                n_pre_layer=self.config.get('n_pre_layer', self.config['n_layer']),
+                mlp_ratio=self.config.get('mlp_ratio', 4.0),
+                mask_ratio=self.config.get('mask_ratio', 0.6),
+                gaussian_scale=self.config.get('gaussian_scale', 2.0),
+                film_linear_multiple=self.config.get('film_linear_multiple', 1.0),
+                sim_coeff=self.config.get('sim_coeff', 25.0),
+                std_coeff=self.config.get('std_coeff', 25.0),
+                cov_coeff=self.config.get('cov_coeff', 1.0),
+                pert_latent_dim=self.config.get('pert_latent_dim', 320),
+                pert_mode_dim=self.config.get('pert_mode_dim', 64),
+                ema_momentum=self.config.get('ema_momentum', 0.995),
             )
             self._biojepa = model.BioJepa(model_config).to(self.device)
-            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'biojepa_v0_6_full_final.pt', map_location=self.device)
-            print(self._biojepa.load_state_dict(checkpoint['model']))
+            checkpoint_path = Path(self.config['checkpoint_path'])
+            if not checkpoint_path.is_absolute():
+                checkpoint_path = self.paths['checkpoint_dir'] / checkpoint_path
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            state_dict = checkpoint['model']
+            state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+            print(self._biojepa.load_state_dict(state_dict))
             self._biojepa.freeze_encoders()
             self._biojepa.eval()
             for param in self._biojepa.parameters():
@@ -212,7 +233,7 @@ class EvalContext:
             print('Loading decoder...')
             decoder_config = BenchmarkDecoderConfig(embed_dim=self.config['embed_dim'])
             self._decoder = BenchmarkDecoder(decoder_config).to(self.device)
-            checkpoint = torch.load(self.paths['checkpoint_dir'] / 'biojepa_v0_6_decoder_final.pt', map_location=self.device)
+            checkpoint = torch.load(self.paths['checkpoint_dir'] / f'biojepa_{VERSION}_decoder_final.pt', map_location=self.device)
             self._decoder.load_state_dict(checkpoint['model'])
             self._decoder.eval()
         return self._decoder
@@ -232,7 +253,7 @@ class EvalContext:
 
     @property
     def seq_banks(self):
-        '''Load sequence embedding banks (DNA, chemical) for v0.6 dual-path alignment.'''
+        '''Load sequence embedding banks (DNA, chemical) for v0.7 dual-path alignment.'''
         if self._seq_banks is None:
             seq_banks_dir = self.paths['pert_dir'] / 'seq_banks'
             self._seq_banks = {}
@@ -253,7 +274,7 @@ class EvalContext:
 
     @property
     def target_bank(self):
-        '''Load protein target embedding bank for v0.6 dual-path alignment.'''
+        '''Load protein target embedding bank for v0.7 dual-path alignment.'''
         if self._target_bank is None:
             target_path = self.paths['pert_dir'] / 'target_banks' / 'protein_targets.npy'
             if target_path.exists():
@@ -275,7 +296,7 @@ class EvalContext:
                         'modality': data['modality'],
                         'mode': data['mode']
                     }
-                print(f'Loaded {len(self._alignment_pairs["seq_idx"])} v0.6 alignment pairs')
+                print(f'Loaded {len(self._alignment_pairs["seq_idx"])} v0.7 alignment pairs')
             elif old_path.exists():
                 with np.load(old_path) as data:
                     n_pairs = len(data['input_idx'])
@@ -285,14 +306,14 @@ class EvalContext:
                         'modality': np.zeros(n_pairs, dtype=np.int64),
                         'mode': np.zeros(n_pairs, dtype=np.int64)
                     }
-                print(f'Loaded {n_pairs} v0.5 alignment pairs (converted to v0.6 format)')
+                print(f'Loaded {n_pairs} v0.5 alignment pairs (converted to v0.7 format)')
             else:
                 raise FileNotFoundError(f'No alignment pairs found at {new_path} or {old_path}')
         return self._alignment_pairs
 
     @property
     def alignment_inference(self):
-        '''Cached action vectors for alignment evals using v0.6 dual-path architecture.
+        '''Cached action vectors for alignment evals using v0.7 dual-path architecture.
 
         Uses encode_sequence_path() for sequences and encode_target_path() for targets.
         Supports DNA and chemical modalities for sequences, protein targets only.
@@ -417,6 +438,17 @@ class EvalContext:
         return self._norman_gi_subtypes
 
     @property
+    def dataset_splits(self):
+        if self._dataset_splits is None:
+            path = self.paths['data_dir'] / 'dataset_splits.json'
+            if path.exists():
+                with open(path) as f:
+                    self._dataset_splits = json.load(f)
+                if self.config['verbose']:
+                    print(f'Loaded dataset splits: {list(self._dataset_splits.keys())}')
+        return self._dataset_splits
+
+    @property
     def test_inference(self):
         if self._test_inference is None:
             if not self._load_inference_cache():
@@ -482,12 +514,14 @@ class EvalContext:
         ds_running = defaultdict(lambda: _RunningMeans(N, E))
         ct_running = defaultdict(lambda: _RunningMeans(N, E))
 
+        pert_gene_masks = {}
         sample_pert_ids, sample_target_ids, sample_pert_mods = [], [], []
         sample_mses, sample_correlations = [], []
         sample_n_perts, sample_cell_types, sample_doses = [], [], []
         sample_all_seq_idx, sample_all_target_idx = [], []
         sample_all_modality, sample_all_mode = [], []
         sample_dataset_ids = []
+        all_control_totals = []
         ds_sample_mses, ds_sample_correlations = defaultdict(list), defaultdict(list)
         ct_sample_mses, ct_sample_correlations = defaultdict(list), defaultdict(list)
 
@@ -495,6 +529,7 @@ class EvalContext:
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             case_x, case_tot = batch.case, batch.case_total
+            all_control_totals.append(cont_tot.cpu().numpy())
             B = cont_x.shape[0]
             N_pert = batch.seq_idx.shape[1]
 
@@ -502,11 +537,13 @@ class EvalContext:
             seq_emb = get_seq_embeddings(batch.seq_idx, batch.modality, self.seq_banks)
             target_emb = get_target_embeddings(batch.target_idx, self.target_bank)
 
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+
             with torch.no_grad():
-                z_context = self.biojepa.student(cont_x, cont_tot, mask_idx=None)
+                z_context = self.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask)
                 action_latents = self.biojepa.composer(
                     seq_emb, target_emb, batch.modality, batch.mode,
-                    batch.has_seq, batch.has_target, pert_mask
+                    batch.has_seq, batch.has_target, pert_mask, dose=batch.dose
                 )
                 target_indices = torch.arange(N, device=self.device).expand(B, N)
                 z_pred_mu, z_pred_logvar = self.biojepa.predictor(z_context, action_latents, target_indices)
@@ -571,6 +608,8 @@ class EvalContext:
                     multi_pert_first_seq_idx[mp_key] = int(p_idx_np[i])
                 else:
                     bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
+                    if key not in pert_gene_masks and hasattr(batch, 'gene_mask') and batch.gene_mask is not None:
+                        pert_gene_masks[key] = batch.gene_mask[i].cpu().numpy().astype(np.bool_)
 
                 ds_name = test_loader.dataset_id_to_name.get(int(ds_id_np[i]), 'unknown')
                 if n_perts_np[i] == 1:
@@ -592,8 +631,11 @@ class EvalContext:
         multi_pert_keys, multi_pert_bulk = multi_pert_global.finalize()
         print(f'Aggregated {len(pert_keys)} single-pert, {len(multi_pert_keys)} multi-pert perturbations, {len(sample_mses)} samples, {shard_idx} shards')
 
+        global_mean_control_total = float(np.concatenate(all_control_totals).mean())
+
         result = {
             'pert_keys': pert_keys, **bulk_result,
+            'global_mean_control_total': global_mean_control_total,
             'sample_mses': np.array(sample_mses),
             'sample_correlations': np.array(sample_correlations),
             'sample_pert_ids': np.concatenate(sample_pert_ids, axis=0),
@@ -608,6 +650,7 @@ class EvalContext:
             'sample_all_mode': np.concatenate(sample_all_mode, axis=0),
             'sample_dataset_ids': np.concatenate(sample_dataset_ids, axis=0),
             'dataset_id_to_name': test_loader.dataset_id_to_name,
+            'pert_gene_masks': pert_gene_masks,
         }
         result['multi_pert_keys'] = multi_pert_keys
         result['multi_pert_first_seq_idx'] = multi_pert_first_seq_idx
@@ -655,7 +698,7 @@ def save_report(results, output_path='eval_report.json'):
     print(f'Saved report to {report_path}')
 
 
-def summarize_pretraining_evals(eval_results):
+def summarize_encoder_evals(eval_results):
     '''Extract compact metrics dict from verbose eval results.'''
     summary = {}
     if 'perturbation_detection' in eval_results:
@@ -683,8 +726,8 @@ def summarize_pretraining_evals(eval_results):
 # ENTRY POINTS
 # =============================================================================
 
-def run_pretraining_evals(ctx):
-    '''Run pretraining (encoder-only) evaluations.'''
+def run_encoder_evals(ctx):
+    '''Run encoder training evaluations.'''
     return {
         'batch_invariance': _batch_invariance(ctx),
         'gene_embedding_pathways': _gene_embedding_pathways(ctx),
@@ -697,8 +740,8 @@ def run_pretraining_evals(ctx):
     }
 
 
-def run_full_model_evals(ctx):
-    '''Run full model evaluations.'''
+def run_ac_evals(ctx):
+    '''Run AC training evaluations.'''
     return {
         'expression_prediction': _expression_prediction(ctx),
         'gene_level_analysis': _gene_level_analysis(ctx),
@@ -710,14 +753,15 @@ def run_full_model_evals(ctx):
     }
 
 
-def run_alignment_evals(ctx):
-    '''Run alignment stage evaluations.'''
+def run_composer_evals(ctx):
+    '''Run composer training evaluations.'''
     return {
         'seq_to_target_retrieval': _seq_to_target_retrieval(ctx),
         'cross_modality_target_consistency': _cross_modality_target_consistency(ctx),
         'seq_target_gap_analysis': _seq_target_gap_analysis(ctx),
         'paired_alignment_quality': _paired_alignment_quality(ctx),
         'mode_sensitivity': _mode_sensitivity(ctx),
+        'mode_semantic_consistency': _mode_semantic_consistency(ctx),
         'fusion_quality': _fusion_quality(ctx),
         'missing_data_robustness': _missing_data_robustness(ctx),
         'multi_pert_alignment': _multi_pert_alignment(ctx),
@@ -775,7 +819,8 @@ def _batch_invariance(ctx):
         for _ in tqdm(range(test_steps), desc='batch_invariance: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            all_emb.append(ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy())
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            all_emb.append(ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy())
             all_batch.append(batch.batch_id.cpu().numpy())
             all_pert.append(batch.seq_idx[:, 0].cpu().numpy())
             all_ds_ids.append(batch.dataset_id.cpu().numpy())
@@ -949,7 +994,8 @@ def _cell_type_probing(ctx):
         for _ in tqdm(range(test_steps), desc='cell_type_probing: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(emb)
             all_cell_type.append(batch.cell_type.cpu().numpy())
             all_batch_id.append(batch.batch_id.cpu().numpy())
@@ -1009,7 +1055,8 @@ def _reconstruction(ctx):
         for _ in tqdm(range(test_steps), desc='reconstruction: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).cpu().numpy()
             all_emb.append(emb)
             all_expr.append(cont_x.cpu().numpy())
 
@@ -1096,8 +1143,9 @@ def _perturbation_detection(ctx):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             case_x, case_tot = batch.case, batch.case_total
-            ctrl_z = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
-            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            ctrl_z = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
+            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             control_emb.append(ctrl_z)
             case_emb.append(case_z)
             all_ds_ids.append(batch.dataset_id.cpu().numpy())
@@ -1167,7 +1215,8 @@ def _embedding_consistency(ctx):
         for _ in tqdm(range(test_steps), desc='embedding_consistency: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             case_x, case_tot = batch.case, batch.case_total
-            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(case_z)
             all_seq.append(batch.seq_idx[:, 0].cpu().numpy())
             all_target.append(batch.target_idx[:, 0].cpu().numpy())
@@ -1217,7 +1266,8 @@ def _latent_space_health(ctx):
         for _ in tqdm(range(test_steps), desc='latent_space_health: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None).mean(dim=1).cpu().numpy()
+            unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
+            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(emb)
 
     embeddings = np.concatenate(all_emb, axis=0)
@@ -1537,12 +1587,13 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     return result
 
 
-def _perturbation_retrieval(ctx, n_eval=1000):
+def _perturbation_retrieval(ctx, n_eval=200):
     '''Given desired outcome, can we find the right perturbation?'''
     inf = ctx.test_inference
     pert_keys = inf['pert_keys']
     mean_real_deltas = inf['mean_real_deltas']
     mean_control_states = inf['mean_control_states']
+    pert_gene_masks = inf.get('pert_gene_masks', {})
     n_genes = ctx.config['num_genes']
 
     retrieval_banks = {}
@@ -1556,11 +1607,17 @@ def _perturbation_retrieval(ctx, n_eval=1000):
     if not retrieval_banks:
         return {'error': 'No perturbation banks available'}
 
-    def predict_all_deltas(control_x_np, bank_info, batch_size=64):
+    global_mean_control_total = inf['global_mean_control_total']
+
+    def predict_all_deltas(control_x_np, bank_info, gene_mask=None, batch_size=64):
         bank, mod_id, mode_id, use_seq = bank_info['bank'], bank_info['mod_id'], bank_info['mode'], bank_info['use_seq']
         n_perts = bank.shape[0]
         control_x = torch.from_numpy(control_x_np).float().to(ctx.device)
-        control_tot = control_x.sum()
+        control_tot = torch.tensor(global_mean_control_total, device=ctx.device)
+        if gene_mask is not None:
+            unknown_mask = torch.from_numpy(~gene_mask).to(ctx.device)
+        else:
+            unknown_mask = None
         all_pred = []
         for start in range(0, n_perts, batch_size):
             end = min(start + batch_size, n_perts)
@@ -1569,7 +1626,8 @@ def _perturbation_retrieval(ctx, n_eval=1000):
             with torch.no_grad():
                 control_batch = control_x.unsqueeze(0).expand(B, -1)
                 control_tot_batch = control_tot.unsqueeze(0).expand(B)
-                z_ctx = ctx.biojepa.student(control_batch, control_tot_batch, mask_idx=None)
+                unk = unknown_mask.unsqueeze(0).expand(B, -1) if unknown_mask is not None else None
+                z_ctx = ctx.biojepa.student(control_batch, control_tot_batch, mask_idx=None, unknown_mask=unk)
                 if use_seq:
                     seq_emb = bank[batch_idx].unsqueeze(1)
                     target_emb = torch.zeros(B, 1, 320, device=ctx.device)
@@ -1618,7 +1676,7 @@ def _perturbation_retrieval(ctx, n_eval=1000):
             if lookup_idx < 0 or lookup_idx >= n_bank:
                 continue
             key_bank_info = {**bank_info, 'mode': key[3]}
-            preds = predict_all_deltas(mean_control_states[key], key_bank_info)
+            preds = predict_all_deltas(mean_control_states[key], key_bank_info, gene_mask=pert_gene_masks.get(key))
             sims = cos_sim(preds, mean_real_deltas[key])
             rank = int(np.where(np.argsort(sims)[::-1] == lookup_idx)[0][0]) + 1
             ranks.append(rank)
@@ -1687,17 +1745,24 @@ def _compute_uncertainty_calibration(inf, n_bins):
         idx = sort_idx[:n]
         selective[f'top_{pct}pct'] = {'mse': float(np.mean(sample_mse[idx])), 'n_samples': n}
 
+    n_perts = inf.get('sample_n_perts')
     pert_groups = defaultdict(list)
     for i in range(len(pert_ids)):
+        if n_perts is not None and n_perts[i] > 1:
+            continue
         key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]), int(pert_modes[i]), int(cell_types[i]))
         pert_groups[key].append(i)
 
     pert_unc_arr = np.array([np.mean(sample_unc[pert_groups[p]]) for p in pert_groups])
     pert_err_arr = np.array([np.mean(sample_mse[pert_groups[p]]) for p in pert_groups])
-    r, _ = pearsonr(pert_unc_arr, pert_err_arr)
-    pert_pearson = 0.0 if np.isnan(r) else float(r)
-    r, _ = spearmanr(pert_unc_arr, pert_err_arr)
-    pert_spearman = 0.0 if np.isnan(r) else float(r)
+    if len(pert_groups) >= 2:
+        r, _ = pearsonr(pert_unc_arr, pert_err_arr)
+        pert_pearson = 0.0 if np.isnan(r) else float(r)
+        r, _ = spearmanr(pert_unc_arr, pert_err_arr)
+        pert_spearman = 0.0 if np.isnan(r) else float(r)
+    else:
+        pert_pearson = 0.0
+        pert_spearman = 0.0
 
     # Variance prediction R²
     variance_r2s = []
@@ -1745,6 +1810,8 @@ def _uncertainty_calibration(ctx, n_bins=10):
                 'sample_all_mode': inf['sample_all_mode'][mask],
                 'sample_cell_types': inf['sample_cell_types'][mask],
             }
+            if 'sample_n_perts' in inf:
+                ds_inf['sample_n_perts'] = inf['sample_n_perts'][mask]
             by_dataset[ds_name] = _compute_uncertainty_calibration(ds_inf, n_bins)
     result['by_dataset'] = by_dataset
     return result
@@ -1926,6 +1993,16 @@ def _compute_additive_baseline(combo_inf, single_deltas, single_gene_names, comb
     return additive_result, nonadd_result, per_key_results
 
 
+def _classify_generalization_splits(combo_to_genes, train_singles):
+    split_map = {}
+    for key, genes in combo_to_genes.items():
+        if genes is None:
+            continue
+        n_unseen = sum(1 for g in genes if g not in train_singles)
+        split_map[key] = n_unseen
+    return split_map
+
+
 def _combination_perturbation(ctx):
     '''Evaluate model performance on multi-perturbation samples (up to 4 perts, any mix of DNA/chemical).'''
     inf = ctx.test_inference
@@ -1964,11 +2041,11 @@ def _combination_perturbation(ctx):
     combo_mapping = ctx.norman_combo_mapping
     single_deltas_data = ctx.norman_single_gene_deltas
     skip_reason = {'skipped': True, 'reason': 'norman_combo_mapping.json or norman_single_gene_deltas.npz not found'}
+    combo_to_genes = {}
     if combo_mapping is None or single_deltas_data is None:
         additive_result, nonadd_result, per_key_results = skip_reason, skip_reason, {}
     else:
         seq_idx_map = inf['multi_pert_first_seq_idx']
-        combo_to_genes = {}
         for key in combo_inf['pert_keys']:
             sid = seq_idx_map.get(key)
             genes = combo_mapping.get(str(sid)) if sid is not None else None
@@ -2013,10 +2090,53 @@ def _combination_perturbation(ctx):
                 'interaction_pearson': float(np.mean(vals['interaction_pearsons'])) if vals['interaction_pearsons'] else None,
             }
 
+    ds_splits = ctx.dataset_splits
+    if ds_splits is None or 'norman' not in ds_splits or not combo_to_genes:
+        gen_splits = {'skipped': True, 'reason': 'dataset_splits.json not found or no combo gene mappings'}
+    else:
+        train_singles = {e for e in ds_splits['norman'].get('train', []) if '_' not in e}
+        split_map = _classify_generalization_splits(combo_to_genes, train_singles)
+        if not split_map:
+            gen_splits = {'skipped': True, 'reason': 'no combos classifiable (combo_to_genes all None)'}
+        else:
+            gen_splits = {}
+            for n_unseen in [0, 1, 2]:
+                split_keys = [k for k, v in split_map.items() if v == n_unseen]
+                if not split_keys:
+                    continue
+                split_mses, split_pearsons, split_mses_top20 = [], [], []
+                for key in split_keys:
+                    pred_d = combo_inf['mean_pred_deltas'][key][:n_genes]
+                    real_d = combo_inf['mean_real_deltas'][key][:n_genes]
+                    split_mses.append(float(np.mean((pred_d - real_d) ** 2)))
+                    top20 = np.argsort(np.abs(real_d))[-20:]
+                    split_mses_top20.append(float(np.mean((pred_d[top20] - real_d[top20]) ** 2)))
+                    if np.std(pred_d) > 1e-9 and np.std(real_d) > 1e-9:
+                        r = pearsonr(pred_d, real_d)[0]
+                        split_pearsons.append(0.0 if np.isnan(r) else float(r))
+                split_result = {
+                    'n_combos': len(split_keys),
+                    'mse': float(np.mean(split_mses)),
+                    'mse_top20_degs': float(np.mean(split_mses_top20)),
+                    'pearson_delta': float(np.mean(split_pearsons)) if split_pearsons else None,
+                }
+                add_keys = [k for k in split_keys if k in per_key_results]
+                if add_keys:
+                    m_mses = [per_key_results[k]['model_mse'] for k in add_keys]
+                    a_mses = [per_key_results[k]['additive_mse'] for k in add_keys]
+                    split_result['additive_baseline'] = {
+                        'n_evaluated': len(add_keys),
+                        'model_mse': float(np.mean(m_mses)),
+                        'additive_mse': float(np.mean(a_mses)),
+                        'model_beats_additive_rate': float(np.mean([m < a for m, a in zip(m_mses, a_mses)])),
+                    }
+                gen_splits[f'{n_unseen}/2_unseen'] = split_result
+
     n_additive = additive_result.get('config', {}).get('n_evaluated', 0) if not additive_result.get('skipped') else 0
     n_gi = sum(v['n_combos'] for v in gi_result.get('by_subtype', {}).values())
+    n_gen = sum(v['n_combos'] for v in gen_splits.values() if isinstance(v, dict) and 'n_combos' in v)
     print(f'combination_perturbation: {len(combo_inf["pert_keys"])} combo perts, {int(combo_sample_mask.sum())} samples, '
-          f'{n_additive} additive baseline, {n_gi} GI-labeled')
+          f'{n_additive} additive baseline, {n_gi} GI-labeled, {n_gen} generalization-classified')
 
     return {
         'expression_prediction': expr_pred,
@@ -2026,11 +2146,12 @@ def _combination_perturbation(ctx):
         'additive_baseline': additive_result,
         'non_additive_gene_mse': nonadd_result,
         'gi_subtype': gi_result,
+        'generalization_splits': gen_splits,
     }
 
 
 def _dose_response(ctx):
-    '''Does predicted severity increase monotonically with dose?'''
+    '''Predicted vs real dose-response curves for chemical perturbations.'''
     inf = ctx.test_inference
     by_ds = inf.get('by_dataset', {})
     sciplex_inf = by_ds.get('sciplex')
@@ -2051,6 +2172,7 @@ def _dose_response(ctx):
         return {'skipped': True, 'reason': 'no dose data (dose=-1.0 for all samples)'}
 
     pred_deltas = inf['sample_pred_deltas'][sciplex_mask][valid_dose_mask]
+    real_deltas = inf['sample_real_deltas'][sciplex_mask][valid_dose_mask]
     pert_ids = inf['sample_pert_ids'][sciplex_mask][valid_dose_mask]
     target_ids = inf['sample_target_ids'][sciplex_mask][valid_dose_mask]
     pert_mods = inf['sample_pert_mods'][sciplex_mask][valid_dose_mask]
@@ -2058,47 +2180,82 @@ def _dose_response(ctx):
     cell_types = inf['sample_cell_types'][sciplex_mask][valid_dose_mask]
     valid_doses = slot0_dose[valid_dose_mask]
 
-    drug_dose_severity = defaultdict(list)
+    drug_dose_pred_severity, drug_dose_real_severity = defaultdict(list), defaultdict(list)
     for i in range(len(valid_doses)):
         key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]), int(pert_modes[i]), int(cell_types[i]))
-        severity = float(np.linalg.norm(pred_deltas[i]))
-        drug_dose_severity[key].append((float(valid_doses[i]), severity))
+        d = float(valid_doses[i])
+        drug_dose_pred_severity[key].append((d, float(np.linalg.norm(pred_deltas[i]))))
+        drug_dose_real_severity[key].append((d, float(np.linalg.norm(real_deltas[i]))))
 
-    monotonic_count, total_pairs = 0, 0
-    all_doses_flat, all_severities_flat = [], []
-    for key, pairs in drug_dose_severity.items():
-        dose_levels = defaultdict(list)
-        for dose, sev in pairs:
-            dose_levels[dose].append(sev)
-        sorted_doses = sorted(dose_levels.keys())
+    monotonic_count, real_monotonic_count, total_pairs = 0, 0, 0
+    all_doses_flat, all_pred_sevs_flat, all_real_sevs_flat = [], [], []
+    per_dose_pred_sevs, per_dose_real_sevs = defaultdict(list), defaultdict(list)
+    curve_similarities = []
+
+    for key in drug_dose_pred_severity:
+        pred_dose_levels, real_dose_levels = defaultdict(list), defaultdict(list)
+        for dose, sev in drug_dose_pred_severity[key]:
+            pred_dose_levels[dose].append(sev)
+        for dose, sev in drug_dose_real_severity[key]:
+            real_dose_levels[dose].append(sev)
+        sorted_doses = sorted(pred_dose_levels.keys())
         if len(sorted_doses) < 2:
             continue
-        mean_sevs = [np.mean(dose_levels[d]) for d in sorted_doses]
+        pred_mean_sevs = [float(np.mean(pred_dose_levels[d])) for d in sorted_doses]
+        real_mean_sevs = [float(np.mean(real_dose_levels[d])) for d in sorted_doses]
         for i in range(len(sorted_doses) - 1):
             total_pairs += 1
-            if mean_sevs[i + 1] > mean_sevs[i]:
+            if pred_mean_sevs[i + 1] > pred_mean_sevs[i]:
                 monotonic_count += 1
+            if real_mean_sevs[i + 1] > real_mean_sevs[i]:
+                real_monotonic_count += 1
         all_doses_flat.extend(sorted_doses)
-        all_severities_flat.extend(mean_sevs)
+        all_pred_sevs_flat.extend(pred_mean_sevs)
+        all_real_sevs_flat.extend(real_mean_sevs)
+        for d, ps, rs in zip(sorted_doses, pred_mean_sevs, real_mean_sevs):
+            per_dose_pred_sevs[d].append(ps)
+            per_dose_real_sevs[d].append(rs)
+        if np.std(pred_mean_sevs) > 1e-9 and np.std(real_mean_sevs) > 1e-9:
+            r = pearsonr(pred_mean_sevs, real_mean_sevs)[0]
+            curve_similarities.append(0.0 if np.isnan(r) else float(r))
 
     if total_pairs == 0:
         return {'skipped': True, 'reason': 'no drugs with multiple dose levels'}
 
-    r, _ = spearmanr(all_doses_flat, all_severities_flat)
+    r, _ = spearmanr(all_doses_flat, all_pred_sevs_flat)
     dose_severity_spearman = 0.0 if np.isnan(r) else float(r)
+    r, _ = spearmanr(all_doses_flat, all_real_sevs_flat)
+    real_dose_severity_spearman = 0.0 if np.isnan(r) else float(r)
 
-    print(f'dose_response: monotonicity={monotonic_count/total_pairs:.2%}, spearman={dose_severity_spearman:.4f}')
+    pred_vs_real_by_dose = {}
+    for dose in sorted(per_dose_pred_sevs.keys()):
+        pv, rv = per_dose_pred_sevs[dose], per_dose_real_sevs[dose]
+        entry = {'n_drugs': len(pv), 'pearson': None}
+        if len(pv) >= 3 and np.std(pv) > 1e-9 and np.std(rv) > 1e-9:
+            r = pearsonr(pv, rv)[0]
+            entry['pearson'] = 0.0 if np.isnan(r) else float(r)
+        pred_vs_real_by_dose[float(dose)] = entry
+
+    curve_sim = float(np.mean(curve_similarities)) if curve_similarities else None
+
+    print(f'dose_response: monotonicity={monotonic_count/total_pairs:.2%}, '
+          f'real_mono={real_monotonic_count/total_pairs:.2%}, spearman={dose_severity_spearman:.4f}, '
+          f'curve_sim={curve_sim}')
 
     return {
-        'config': {'n_drugs': len(drug_dose_severity), 'n_valid_samples': int(valid_dose_mask.sum())},
+        'config': {'n_drugs': len(drug_dose_pred_severity), 'n_valid_samples': int(valid_dose_mask.sum())},
         'monotonicity_score': float(monotonic_count / total_pairs),
+        'real_monotonicity_score': float(real_monotonic_count / total_pairs),
         'dose_severity_spearman': float(dose_severity_spearman),
+        'real_dose_severity_spearman': float(real_dose_severity_spearman),
         'n_dose_pairs': total_pairs,
+        'curve_similarity': curve_sim,
+        'pred_vs_real_by_dose': pred_vs_real_by_dose,
     }
 
 
 # =============================================================================
-# ALIGNMENT EVALS (v0.6 dual-path architecture)
+# ALIGNMENT EVALS (v0.7 dual-path architecture)
 # =============================================================================
 
 def _seq_to_target_retrieval(ctx):
@@ -2351,6 +2508,175 @@ def _mode_sensitivity(ctx):
         'pairwise_distances': pairwise_distances,
         'classification': {'accuracy': float(mode_acc), 'chance': float(chance), 'above_chance_ratio': float(mode_acc / chance)}
     }
+
+
+def _mode_semantic_consistency(ctx):
+    '''Do learned mode embeddings reflect biological grouping (suppressive vs activating)?'''
+    seq_bank = ctx.seq_banks.get('dna') if ctx.seq_banks else None
+    if seq_bank is None:
+        return {'error': 'No DNA sequence bank available'}
+
+    SUPPRESSIVE = {'crispri': 0, 'knockout': 3, 'inhibitor': 4, 'degrader': 6}
+    ACTIVATING = {'crispra': 1, 'overexpression': 2, 'agonist': 5}
+    ALL_MODES = {**SUPPRESSIVE, **ACTIVATING}
+
+    n_sample = min(200, seq_bank.shape[0])
+    rng = np.random.RandomState(42)
+    sample_idx = rng.choice(seq_bank.shape[0], n_sample, replace=False)
+
+    mode_vectors = {}
+    with torch.no_grad():
+        seq_emb = seq_bank[sample_idx].unsqueeze(1)
+        modality_ids = torch.zeros(n_sample, 1, dtype=torch.long, device=ctx.device)
+        pert_mask = torch.ones(n_sample, 1, dtype=torch.bool, device=ctx.device)
+        for mode_name, mode_id in ALL_MODES.items():
+            mode_ids = torch.full((n_sample, 1), mode_id, dtype=torch.long, device=ctx.device)
+            actions = ctx.biojepa.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
+            v = actions.squeeze(1).cpu().numpy()
+            norms = np.linalg.norm(v, axis=1, keepdims=True) + 1e-8
+            mode_vectors[mode_name] = v / norms
+
+    mode_list = list(ALL_MODES.keys())
+    pairwise_cosine = {}
+    for i, m1 in enumerate(mode_list):
+        for m2 in mode_list[i+1:]:
+            sim = float(np.mean(np.sum(mode_vectors[m1] * mode_vectors[m2], axis=1)))
+            pairwise_cosine[f'{m1}_vs_{m2}'] = sim
+
+    suppressive_names = set(SUPPRESSIVE.keys())
+    activating_names = set(ACTIVATING.keys())
+    within_sims, cross_sims = [], []
+    within_supp, within_act = [], []
+    for i, m1 in enumerate(mode_list):
+        for m2 in mode_list[i+1:]:
+            sim = pairwise_cosine[f'{m1}_vs_{m2}']
+            same_group = (m1 in suppressive_names and m2 in suppressive_names) or (m1 in activating_names and m2 in activating_names)
+            if same_group:
+                within_sims.append(sim)
+                if m1 in suppressive_names:
+                    within_supp.append(sim)
+                else:
+                    within_act.append(sim)
+            else:
+                cross_sims.append(sim)
+
+    within_group_avg = float(np.mean(within_sims))
+    cross_group_avg = float(np.mean(cross_sims))
+    semantic_gap = float(within_group_avg - cross_group_avg)
+
+    result = {
+        'embedding_semantics': {
+            'config': {'n_samples': int(n_sample), 'n_modes': len(ALL_MODES)},
+            'pairwise_cosine': pairwise_cosine,
+            'within_suppressive_sim': float(np.mean(within_supp)),
+            'within_activating_sim': float(np.mean(within_act)),
+            'within_group_avg': within_group_avg,
+            'cross_group_avg': cross_group_avg,
+            'semantic_gap': semantic_gap,
+        }
+    }
+
+    pairs = ctx.alignment_pairs
+    if pairs is None:
+        result['cross_mode_retrieval'] = {'skipped': True, 'reason': 'no alignment pairs'}
+        print(f'mode_semantic_consistency: semantic_gap={semantic_gap:.4f}')
+        return result
+
+    dna_mask = pairs['modality'] == 0
+    dna_seq = pairs['seq_idx'][dna_mask]
+    dna_target = pairs['target_idx'][dna_mask]
+    dna_mode = pairs['mode'][dna_mask]
+
+    target_to_crispri = defaultdict(set)
+    target_to_crispra = defaultdict(set)
+    for s, t, m in zip(dna_seq, dna_target, dna_mode):
+        if s < seq_bank.shape[0]:
+            if m == 0:
+                target_to_crispri[int(t)].add(int(s))
+            elif m == 1:
+                target_to_crispra[int(t)].add(int(s))
+
+    matched_targets = sorted(set(target_to_crispri) & set(target_to_crispra))
+    if len(matched_targets) < 5:
+        result['cross_mode_retrieval'] = {'skipped': True, 'reason': f'insufficient cross-mode genes ({len(matched_targets)})'}
+        print(f'mode_semantic_consistency: semantic_gap={semantic_gap:.4f}')
+        return result
+
+    crispri_vecs, crispra_vecs = [], []
+    with torch.no_grad():
+        modality_ids_1 = torch.zeros(1, 1, dtype=torch.long, device=ctx.device)
+        pert_mask_1 = torch.ones(1, 1, dtype=torch.bool, device=ctx.device)
+        mode_i = torch.zeros(1, 1, dtype=torch.long, device=ctx.device)
+        mode_a = torch.ones(1, 1, dtype=torch.long, device=ctx.device)
+
+        for t in matched_targets:
+            i_indices = sorted(target_to_crispri[t])
+            a_indices = sorted(target_to_crispra[t])
+
+            i_embs = seq_bank[i_indices].unsqueeze(1)
+            i_mod = modality_ids_1.expand(len(i_indices), 1)
+            i_mask = pert_mask_1.expand(len(i_indices), 1)
+            i_mode = mode_i.expand(len(i_indices), 1)
+            i_actions = ctx.biojepa.composer.encode_sequence_path(i_embs, i_mod, i_mode, i_mask)
+            i_avg = i_actions.squeeze(1).mean(dim=0, keepdim=True)
+            crispri_vecs.append(F.normalize(i_avg, dim=1))
+
+            a_embs = seq_bank[a_indices].unsqueeze(1)
+            a_mod = modality_ids_1.expand(len(a_indices), 1)
+            a_mask = pert_mask_1.expand(len(a_indices), 1)
+            a_mode = mode_a.expand(len(a_indices), 1)
+            a_actions = ctx.biojepa.composer.encode_sequence_path(a_embs, a_mod, a_mode, a_mask)
+            a_avg = a_actions.squeeze(1).mean(dim=0, keepdim=True)
+            crispra_vecs.append(F.normalize(a_avg, dim=1))
+
+    crispri_mat = torch.cat(crispri_vecs, dim=0)
+    crispra_mat = torch.cat(crispra_vecs, dim=0)
+
+    matched_sim = float(F.cosine_similarity(crispri_mat, crispra_mat, dim=1).mean().item())
+    n_genes = crispri_mat.shape[0]
+    n_random = min(1000, n_genes * n_genes)
+    random_sims = []
+    for _ in range(n_random):
+        i_idx = rng.randint(0, n_genes)
+        a_idx = rng.randint(0, n_genes)
+        random_sims.append(float(F.cosine_similarity(crispri_mat[i_idx:i_idx+1], crispra_mat[a_idx:a_idx+1], dim=1).item()))
+    random_mean = float(np.mean(random_sims))
+
+    sim_matrix = torch.mm(crispri_mat, crispra_mat.T).cpu().numpy()
+    K_VALUES = [1, 5]
+
+    def _retrieval_metrics(sim_mat):
+        n = sim_mat.shape[0]
+        reciprocal_ranks = []
+        recall_at_k = {k: [] for k in K_VALUES}
+        for row in range(n):
+            sorted_indices = np.argsort(sim_mat[row])[::-1]
+            for rank, idx in enumerate(sorted_indices, 1):
+                if idx == row:
+                    reciprocal_ranks.append(1.0 / rank)
+                    for k in K_VALUES:
+                        recall_at_k[k].append(1 if rank <= k else 0)
+                    break
+        return {
+            'mrr': float(np.mean(reciprocal_ranks)),
+            'recall_at_1': float(np.mean(recall_at_k[1])),
+            'recall_at_5': float(np.mean(recall_at_k[5])),
+        }
+
+    retrieval_i_to_a = _retrieval_metrics(sim_matrix)
+    retrieval_a_to_i = _retrieval_metrics(sim_matrix.T)
+    cross_mode_mrr = float((retrieval_i_to_a['mrr'] + retrieval_a_to_i['mrr']) / 2)
+
+    result['cross_mode_retrieval'] = {
+        'config': {'n_matched_genes': int(n_genes)},
+        'similarity': {'matched_mean': matched_sim, 'random_mean': random_mean, 'gap': float(matched_sim - random_mean)},
+        'retrieval_i_to_a': retrieval_i_to_a,
+        'retrieval_a_to_i': retrieval_a_to_i,
+        'cross_mode_mrr': cross_mode_mrr,
+    }
+
+    print(f'mode_semantic_consistency: semantic_gap={semantic_gap:.4f}, cross_mode_mrr={cross_mode_mrr:.4f}')
+    return result
 
 
 def _fusion_quality(ctx):

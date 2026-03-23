@@ -1,20 +1,22 @@
 #!/usr/bin/env python
-'''Run pretraining evaluation suite.'''
+'''Run AC training evaluation suite.'''
 import argparse
 import os
 from pathlib import Path
-from .evals import EvalContext, run_pretraining_evals, save_report
+from .evals import EvalContext, run_ac_evals, save_report
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run pretraining evaluation suite')
+    parser = argparse.ArgumentParser(description='Run AC training evaluation suite')
+    parser.add_argument('--checkpoint', required=True, help='Path to checkpoint file (absolute, or relative to checkpoint dir)')
     parser.add_argument('--output', default='eval_report.json', help='Output file for results')
-    parser.add_argument('--data-root', default='/Users/djemec/data/jepa/v0_6', help='Data root directory')
-    parser.add_argument('--checkpoint-root', default='/Users/djemec/data/jepa/v0_6', help='Checkpoint root directory')
+    parser.add_argument('--data-root', default='/Users/djemec/data/jepa/v0_7', help='Data root directory')
+    parser.add_argument('--checkpoint-root', default='/Users/djemec/data/jepa/v0_7', help='Checkpoint root directory')
     parser.add_argument('--ref-dir', default=None, help='Reference data directory (default: $BIOJEPA_REF_DIR or <data_root>/references)')
     parser.add_argument('--num-genes', type=int, required=True, help='Number of genes in model')
     parser.add_argument('--embed-dim', type=int, required=True, help='Embedding dimension')
     parser.add_argument('--n-layer', type=int, required=True, help='Number of transformer layers')
+    parser.add_argument('--n-pre-layer', type=int, default=None, help='Number of masked predictor layers (default: n_layer)')
     parser.add_argument('--heads', type=int, required=True, help='Number of attention heads')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size for evaluation')
     args = parser.parse_args()
@@ -31,17 +33,20 @@ def main():
         'num_genes': args.num_genes,
         'embed_dim': args.embed_dim,
         'n_layer': args.n_layer,
+        'n_pre_layer': args.n_pre_layer if args.n_pre_layer is not None else args.n_layer,
         'heads': args.heads,
-        'batch_size': args.batch_size
+        'batch_size': args.batch_size,
+        'checkpoint_path': args.checkpoint,
     }
 
     print('=' * 60)
-    print('Pretraining Evaluation Suite')
+    print('AC Training Evaluation Suite')
+    print(f'Checkpoint: {args.checkpoint}')
     print(f'Reference directory: {ref_dir}')
     print('=' * 60)
 
     ctx = EvalContext(config=config, data_root=data_root, checkpoint_root=checkpoint_root, ref_dir=ref_dir)
-    results = run_pretraining_evals(ctx)
+    results = run_ac_evals(ctx)
     save_report(results, args.output)
 
     print('\n' + '=' * 60)

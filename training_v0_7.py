@@ -5,11 +5,14 @@ import numpy as np
 import json
 import gc
 from pathlib import Path
+from torch.utils.tensorboard import SummaryWriter
 
-from biojepa_v0_6 import BioJepa, BioJepaConfig
-from evals.evals import EvalContext, run_pretraining_evals, summarize_pretraining_evals
+from torch.optim.lr_scheduler import LambdaLR
+
+from biojepa_v0_7 import BioJepa, BioJepaConfig
+from evals.evals import EvalContext, run_encoder_evals, summarize_encoder_evals
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
-from config_v0_6 import PretrainConfig, AlignmentConfig, FullTrainingConfig, DecoderConfig, DataConfig, MAX_SEQ_DIM
+from config_v0_7 import EncoderTrainingConfig, ComposerTrainingConfig, ACTrainingConfig, DecoderConfig, DataConfig, MAX_SEQ_DIM, VERSION
 
 
 def create_model(model_cfg: BioJepaConfig, device) -> BioJepa:
@@ -31,12 +34,6 @@ def maybe_compile(model, compile_model=False):
 
 
 def load_feature_banks(data_cfg: DataConfig, device):
-    '''Load sequence and target embedding banks for v0.6 multi-pert format.
-
-    Returns:
-        seq_banks: dict with 'dna' and optionally 'chemical' embeddings
-        target_bank: protein target embeddings
-    '''
     seq_banks_dir = Path(data_cfg.data_root) / 'pert_embd' / 'seq_banks'
     target_banks_dir = Path(data_cfg.data_root) / 'pert_embd' / 'target_banks'
 
@@ -65,17 +62,6 @@ def load_feature_banks(data_cfg: DataConfig, device):
 
 
 def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=MAX_SEQ_DIM):
-    '''Look up sequence embeddings from banks based on modality.
-
-    Args:
-        seq_idx: [B, N_pert] indices into modality-specific banks
-        modality: [B, N_pert] modality IDs (0=dna, 1=protein, 2=chemical)
-        seq_banks: dict with 'dna', 'chemical' tensors
-        max_seq_dim: pad all embeddings to this dimension
-
-    Returns:
-        seq_emb: [B, N_pert, max_seq_dim] padded embeddings
-    '''
     B, N = seq_idx.shape
     device = seq_idx.device
     seq_emb = torch.zeros(B, N, max_seq_dim, device=device)
@@ -103,15 +89,6 @@ def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=MAX_SEQ_DIM):
 
 
 def get_target_embeddings(target_idx, target_bank):
-    '''Look up target embeddings from bank.
-
-    Args:
-        target_idx: [B, N_pert] indices into target bank
-        target_bank: [N_targets, D] target embeddings
-
-    Returns:
-        target_emb: [B, N_pert, D] embeddings (zeros for invalid indices)
-    '''
     B, N = target_idx.shape
     D = target_bank.shape[-1]
     device = target_idx.device
@@ -132,9 +109,28 @@ def get_target_embeddings(target_idx, target_bank):
     return target_emb
 
 
-def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device, data_cfg: DataConfig, model_cfg: BioJepaConfig, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None) -> dict:
+def _make_writer(log_dir, stage_name):
+    if log_dir is None:
+        return None
+    return SummaryWriter(Path(log_dir) / stage_name)
+
+
+def _wsd_lambda(step, warmup_steps, phase2_start_step, max_steps):
+    if step < warmup_steps:
+        return step / max(1, warmup_steps)
+    if step < phase2_start_step:
+        return 1.0
+    decay_steps = max_steps - phase2_start_step
+    return max(0.0, 1.0 - (step - phase2_start_step) / max(1, decay_steps))
+
+
+def run_encoder_training(model, train_loader, val_loader, cfg: EncoderTrainingConfig, device, data_cfg: DataConfig, model_cfg: BioJepaConfig, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None, log_dir='default') -> dict:
     checkpoint_dir = Path(data_cfg.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    if log_dir == 'default':
+        log_dir = checkpoint_dir / 'training_logs'
+    writer = _make_writer(log_dir, 'encoder')
 
     use_autocast = use_amp and device.type == 'cuda'
     fused = use_fused_optimizer and torch.cuda.is_available()
@@ -146,12 +142,21 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
         max_steps = cfg.n_steps
     else:
         raise ValueError('Either epochs or n_steps must be specified')
-    print(f'Pretraining: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
-    model.enable_all_gradients()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=cfg.warmup_pct
-    )
+    print(f'Encoder training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
+    model.enable_encoder_gradients()
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
+
+    phase2_start_step = int(max_steps * cfg.phase2_start_pct)
+    warmup_steps = int(max_steps * cfg.warmup_pct)
+    scheduler = LambdaLR(optimizer, lambda step: _wsd_lambda(step, warmup_steps, phase2_start_step, max_steps))
+    print(f'WSD schedule: warmup={warmup_steps} steps, phase2 starts at step {phase2_start_step}')
+
+    context_ramp_start = int(max_steps * (1.0 - cfg.context_ramp_pct))
+    if cfg.context_coeff > 0:
+        print(f'Context L2: target={cfg.context_coeff}, ramp starts at step {context_ramp_start}')
+    if cfg.ema_final_momentum is not None:
+        print(f'EMA annealing: {model_cfg.ema_momentum} -> {cfg.ema_final_momentum} during phase 2')
 
     loss_history = []
     epoch_evals = {}
@@ -161,6 +166,12 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
 
+        if cfg.context_coeff > 0 and step >= context_ramp_start:
+            progress = (step - context_ramp_start) / max(1, max_steps - 1 - context_ramp_start)
+            current_context_coeff = cfg.context_coeff * progress
+        else:
+            current_context_coeff = 0.0
+
         if step % 500 == 0 or last_step:
             model.eval()
             with torch.no_grad():
@@ -169,35 +180,58 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        val_loss = model.forward_pretrain(b.x, b.total)
+                        val_loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
+                if writer:
+                    writer.add_scalar('loss/val', avg_val_loss, step)
             model.train()
 
-        if step > 0 and (step % 10000 ==0 or (step + 1) % steps_per_epoch == 0) and not last_step:
+        if step > 0 and (step % 10000 == 0 or (step + 1) % steps_per_epoch == 0) and not last_step:
             epoch = (step + 1) // steps_per_epoch
             torch.save({
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_pt_epoch_{epoch}_step{step}.pt')
+            }, checkpoint_dir / f'biojepa_{VERSION}_encoder_epoch_{epoch}_step{step}.pt')
 
         b = train_loader.next_batch()
         optimizer.zero_grad()
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-            loss = model.forward_pretrain(b.x, b.total)
+            if writer:
+                loss, components = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff, return_components=True)
+            else:
+                loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 1.0)
         optimizer.step()
-        model.update_teacher()
+
+        if cfg.ema_final_momentum is not None and step >= phase2_start_step:
+            ema_progress = (step - phase2_start_step) / max(1, max_steps - 1 - phase2_start_step)
+            current_ema = model_cfg.ema_momentum + (cfg.ema_final_momentum - model_cfg.ema_momentum) * ema_progress
+            model.update_teacher(m=current_ema)
+        else:
+            model.update_teacher()
         scheduler.step()
 
         loss_history.append(loss.item())
         total_epoch_loss += loss.item()
 
+        current_phase = 2 if step >= phase2_start_step else 1
+        if writer:
+            writer.add_scalar('loss/train', loss.item(), step)
+            writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
+            writer.add_scalar('grad_norm', grad_norm.item(), step)
+            writer.add_scalar('phase', current_phase, step)
+            writer.add_scalar('context_coeff', current_context_coeff, step)
+            if cfg.ema_final_momentum is not None and step >= phase2_start_step:
+                writer.add_scalar('ema_momentum', current_ema, step)
+            for k, v in components.items():
+                writer.add_scalar(f'loss/{k}', v.item(), step)
+
         if step % 100 == 0:
-            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
+            print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e} | Phase: {current_phase}')
 
         if step > 0 and (step + 1) % steps_per_epoch == 0:
             avg_loss = total_epoch_loss / steps_per_epoch
@@ -212,18 +246,21 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
                     'n_layer': model_cfg.n_layer, 'heads': model_cfg.heads,
                     'batch_size': cfg.batch_size, 'verbose': False,
                 }
-                ckpt_name = 'biojepa_v0_6_pt_final.pt' if last_step else f'biojepa_v0_6_pt_epoch_{epoch}_step{step}.pt'
+                ckpt_name = f'biojepa_{VERSION}_encoder_final.pt' if last_step else f'biojepa_{VERSION}_encoder_epoch_{epoch}_step{step}.pt'
                 model.eval()
                 eval_ctx = EvalContext(config=eval_config, data_root=data_cfg.data_root, checkpoint_root=data_cfg.data_root, ref_dir=data_cfg.ref_dir)
                 eval_ctx._biojepa = model
                 try:
-                    raw_results = run_pretraining_evals(eval_ctx)
-                    metrics = summarize_pretraining_evals(raw_results)
+                    raw_results = run_encoder_evals(eval_ctx)
+                    metrics = summarize_encoder_evals(raw_results)
                     epoch_evals[epoch] = {'step': step + 1, 'avg_loss': round(avg_loss, 5), 'checkpoint': ckpt_name, 'metrics': metrics}
                     print(f'Epoch {epoch} metrics: {metrics}')
                     eval_results_path = Path(data_cfg.eval_results_dir)
                     eval_results_path.mkdir(parents=True, exist_ok=True)
-                    (eval_results_path / 'pt_epoch_evals.json').write_text(json.dumps(epoch_evals, indent=2))
+                    (eval_results_path / 'encoder_epoch_evals.json').write_text(json.dumps(epoch_evals, indent=2))
+                    if writer:
+                        for k, v in metrics.items():
+                            writer.add_scalar(f'eval/{k}', v, epoch)
                 finally:
                     eval_ctx._biojepa = None
                     del eval_ctx
@@ -237,19 +274,21 @@ def run_pretraining(model, train_loader, val_loader, cfg: PretrainConfig, device
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_pt_final.pt')
+            }, checkpoint_dir / f'biojepa_{VERSION}_encoder_final.pt')
+
+    if writer:
+        writer.close()
 
     return {'loss_history': loss_history, 'epoch_evals': epoch_evals, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: AlignmentConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False) -> dict:
-    '''Run dual-path alignment training.
-
-    The alignment loader provides (seq_idx, target_idx, modality, mode) pairs.
-    We train the composer to align sequence embeddings with target embeddings.
-    '''
+def run_composer_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: ComposerTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default') -> dict:
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    if log_dir == 'default':
+        log_dir = checkpoint_dir / 'training_logs'
+    writer = _make_writer(log_dir, 'composer')
 
     use_autocast = use_amp and device.type == 'cuda'
     fused = use_fused_optimizer and torch.cuda.is_available()
@@ -261,7 +300,8 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
         max_steps = cfg.n_steps
     else:
         raise ValueError('Either epochs or n_steps must be specified')
-    print(f'Alignment: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
+    print(f'Composer training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
+    print(f'InfoNCE loss (temperature: {cfg.temperature})')
 
     for p in model.parameters():
         p.requires_grad = False
@@ -292,10 +332,12 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
                     pert_mask = torch.ones(B, 1, dtype=torch.bool, device=device)
 
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        val_loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
+                        val_loss = model.forward_composer(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
+                if writer:
+                    writer.add_scalar('loss/val', avg_val_loss, step)
             model.train()
 
         b = train_loader.next_batch()
@@ -309,12 +351,16 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
 
         optimizer.zero_grad()
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-            loss = model.forward_alignment(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
+            loss = model.forward_composer(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
         loss.backward()
         optimizer.step()
         scheduler.step()
 
         loss_history.append(loss.item())
+
+        if writer:
+            writer.add_scalar('loss/train', loss.item(), step)
+            writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
 
         if step % 100 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
@@ -324,7 +370,10 @@ def run_alignment(model, train_loader, val_loader, seq_banks, target_bank, cfg: 
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_align_final.pt')
+            }, checkpoint_dir / f'biojepa_{VERSION}_composer_final.pt')
+
+    if writer:
+        writer.close()
 
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
@@ -342,19 +391,26 @@ def get_beta_nll(step, target_beta, anneal_steps):
     return target_beta * min(1.0, step / max(1, anneal_steps))
 
 
-def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: FullTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False) -> dict:
-    '''Run full action-conditioned training with multi-pert format.'''
+def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: ACTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default') -> dict:
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    if log_dir == 'default':
+        log_dir = checkpoint_dir / 'training_logs'
+    writer = _make_writer(log_dir, 'ac')
 
     use_autocast = use_amp and device.type == 'cuda'
     fused = use_fused_optimizer and torch.cuda.is_available()
 
     model.freeze_encoders()
+    for p in model.masked_predictor.parameters():
+        p.requires_grad = False
     for p in model.predictor.parameters():
         p.requires_grad = True
     for p in model.composer.parameters():
         p.requires_grad = True
+    model.null_action.requires_grad = True
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
     if cfg.epochs is not None:
@@ -363,30 +419,30 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
         max_steps = cfg.n_steps
     else:
         raise ValueError('Either epochs or n_steps must be specified')
-    print(f'Full training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
+    print(f'AC training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
 
     optimizer = torch.optim.AdamW([
         {'params': model.predictor.parameters(), 'lr': cfg.predictor_lr},
-        {'params': model.composer.parameters(), 'lr': cfg.predictor_lr * 0.1}
+        {'params': list(model.composer.parameters()) + [model.null_action], 'lr': cfg.predictor_lr * cfg.composer_lr_mult}
     ], weight_decay=cfg.weight_decay, fused=fused)
 
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=[cfg.predictor_lr, cfg.predictor_lr * 0.1], total_steps=max_steps, pct_start=0.05
+        optimizer, max_lr=[cfg.predictor_lr, cfg.predictor_lr * cfg.composer_lr_mult], total_steps=max_steps, pct_start=0.05
     )
 
     base_mask_ratio = model.config.mask_ratio
-    total_epochs = max_steps // steps_per_epoch
     if cfg.mask_anneal_pct > 0:
-        anneal_epochs = max(1, int(total_epochs * cfg.mask_anneal_pct))
-        anneal_start_step = (total_epochs - anneal_epochs) * steps_per_epoch
+        anneal_start_step = max(0, int(max_steps * (1 - cfg.mask_anneal_pct)))
     else:
         anneal_start_step = max_steps
-    print(f'Mask annealing: starts at step {anneal_start_step} ({base_mask_ratio:.3f} -> 0.1)')
+    print(f'Mask annealing: starts at step {anneal_start_step} ({base_mask_ratio:.3f} -> {cfg.mask_anneal_floor:.3f})')
 
-    target_beta = 0.2
-    beta_anneal_pct = 0.3
+    target_beta = cfg.beta_nll_target
+    beta_anneal_pct = cfg.beta_nll_anneal_pct
     beta_anneal_steps = int(max_steps * beta_anneal_pct)
     print(f'Beta-NLL: target={target_beta:.2f}, anneal steps={beta_anneal_steps}')
+    if cfg.p_uncond > 0:
+        print(f'Conditioning dropout: p_uncond={cfg.p_uncond:.2f}')
 
     loss_history = []
     total_epoch_loss = 0
@@ -394,7 +450,7 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
 
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
-        current_mask_ratio = get_mask_ratio(step, base_mask_ratio, anneal_start_step, max_steps)
+        current_mask_ratio = get_mask_ratio(step, base_mask_ratio, anneal_start_step, max_steps, floor=cfg.mask_anneal_floor)
         current_beta = get_beta_nll(step, target_beta, beta_anneal_steps)
 
         if step % 500 == 0 or last_step:
@@ -409,42 +465,60 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
                     target_emb = get_target_embeddings(b.target_idx, target_bank)
                     pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
 
+                    unknown_mask = ~b.gene_mask
+
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
                         val_loss = model(b.control, b.control_total, b.case, b.case_total,
                                          seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
-                                         mask_ratio=current_mask_ratio, beta_nll=current_beta)
+                                         mask_ratio=current_mask_ratio, beta_nll=current_beta, unknown_mask=unknown_mask, dose=b.dose)
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Step {step} | val loss: {avg_val_loss:.4f}')
+                if writer:
+                    writer.add_scalar('loss/val', avg_val_loss, step)
             model.train()
 
-
-        if step > 0 and (step % 10000 ==0 or (step + 1) % steps_per_epoch == 0) and not last_step:
+        if step > 0 and (step % 10000 == 0 or (step + 1) % steps_per_epoch == 0) and not last_step:
             epoch = (step + 1) // steps_per_epoch
             torch.save({
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_full_epoch_{epoch}_step{step}.pt')
+            }, checkpoint_dir / f'biojepa_{VERSION}_ac_epoch_{epoch}_step{step}.pt')
 
         b = train_loader.next_batch()
 
         seq_emb = get_seq_embeddings(b.seq_idx, b.modality, seq_banks)
         target_emb = get_target_embeddings(b.target_idx, target_bank)
         pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
+        unknown_mask = ~b.gene_mask
 
         optimizer.zero_grad()
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-            loss = model(b.control, b.control_total, b.case, b.case_total,
-                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
-                         mask_ratio=current_mask_ratio, beta_nll=current_beta)
+            if writer:
+                loss, components = model(b.control, b.control_total, b.case, b.case_total,
+                                         seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
+                                         mask_ratio=current_mask_ratio, beta_nll=current_beta, return_components=True, p_uncond=cfg.p_uncond, unknown_mask=unknown_mask, dose=b.dose)
+            else:
+                loss = model(b.control, b.control_total, b.case, b.case_total,
+                             seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
+                             mask_ratio=current_mask_ratio, beta_nll=current_beta, p_uncond=cfg.p_uncond, unknown_mask=unknown_mask, dose=b.dose)
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 1.0)
         optimizer.step()
         scheduler.step()
 
         loss_history.append(loss.item())
         total_epoch_loss += loss.item()
+
+        if writer:
+            writer.add_scalar('loss/train', loss.item(), step)
+            writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
+            writer.add_scalar('grad_norm', grad_norm.item(), step)
+            writer.add_scalar('mask_ratio', current_mask_ratio, step)
+            writer.add_scalar('beta_nll', current_beta, step)
+            for k, v in components.items():
+                writer.add_scalar(f'loss/{k}', v.item(), step)
 
         if step % 100 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e} | Beta: {current_beta:.3f}')
@@ -460,19 +534,21 @@ def run_full_training(model, train_loader, val_loader, seq_banks, target_bank, c
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_full_final.pt')
+            }, checkpoint_dir / f'biojepa_{VERSION}_ac_final.pt')
+
+    if writer:
+        writer.close()
 
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig, use_amp=False, use_fused_optimizer=False) -> tuple[BenchmarkDecoder, dict]:
-    '''Train linear decoder on action-conditioned predictions.
-
-    Uses the full prediction pipeline: student encoder -> composer -> predictor.
-    Decoder learns to map latent deltas (z_pred - z_context) to expression deltas (xt - xc).
-    '''
+def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig, use_amp=False, use_fused_optimizer=False, log_dir='default') -> tuple[BenchmarkDecoder, dict]:
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    if log_dir == 'default':
+        log_dir = checkpoint_dir / 'training_logs'
+    writer = _make_writer(log_dir, 'decoder')
 
     use_autocast = use_amp and device.type == 'cuda'
     fused = use_fused_optimizer and torch.cuda.is_available()
@@ -487,6 +563,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
         max_steps = cfg.n_steps
     else:
         raise ValueError('Either epochs or n_steps must be specified')
+    print(f'Decoder training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
 
     optimizer = torch.optim.AdamW(decoder.parameters(), lr=cfg.lr, fused=fused)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=cfg.lr, total_steps=max_steps, pct_start=0.05)
@@ -515,9 +592,11 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
                     target_emb = get_target_embeddings(b.target_idx, target_bank)
                     pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
 
+                    unknown_mask = ~b.gene_mask
+
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        z_context = model.student(b.control, b.control_total, mask_idx=None)
-                        action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
+                        z_context = model.student(b.control, b.control_total, mask_idx=None, unknown_mask=unknown_mask)
+                        action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask, dose=b.dose)
                         target_indices = torch.arange(N, device=device).expand(B, N)
                         z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
                         pred_delta = decoder(z_pred_mu) - decoder(z_context)
@@ -526,6 +605,8 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Decoder Step {step} | val loss: {avg_val_loss:.4f}')
+                if writer:
+                    writer.add_scalar('loss/val', avg_val_loss, step)
             decoder.train()
 
         b = train_loader.next_batch()
@@ -534,10 +615,11 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
         seq_emb = get_seq_embeddings(b.seq_idx, b.modality, seq_banks)
         target_emb = get_target_embeddings(b.target_idx, target_bank)
         pert_mask = torch.arange(b.seq_idx.shape[1], device=device).unsqueeze(0) < b.n_perts.unsqueeze(1)
+        unknown_mask = ~b.gene_mask
 
         with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-            z_context = model.student(b.control, b.control_total, mask_idx=None)
-            action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask)
+            z_context = model.student(b.control, b.control_total, mask_idx=None, unknown_mask=unknown_mask)
+            action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask, dose=b.dose)
             target_indices = torch.arange(N, device=device).expand(B, N)
             z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
 
@@ -552,6 +634,10 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
 
         loss_history.append(loss.item())
 
+        if writer:
+            writer.add_scalar('loss/train', loss.item(), step)
+            writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
+
         if step % 100 == 0:
             print(f'Decoder Step {step} | Loss: {loss.item():.5f}')
 
@@ -560,6 +646,9 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
                 'model': decoder.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'step': step
-            }, checkpoint_dir / f'biojepa_v0_6_decoder_final.pt')
+            }, checkpoint_dir / f'biojepa_{VERSION}_decoder_final.pt')
+
+    if writer:
+        writer.close()
 
     return decoder, {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}

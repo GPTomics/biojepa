@@ -1,35 +1,47 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+VERSION = 'v0_7'
+
 
 @dataclass
-class PretrainConfig:
+class EncoderTrainingConfig:
     epochs: int = None #10
     lr: float = 1e-3
     batch_size: int = 32
     warmup_pct: float = 0.05
     weight_decay: float = 0.05
     n_steps: int = None
+    phase2_start_pct: float = 0.8
+    context_coeff: float = 0.0
+    context_ramp_pct: float = 0.2
+    ema_final_momentum: float = None
 
 
 @dataclass
-class AlignmentConfig:
+class ComposerTrainingConfig:
     epochs: int = None #1000
     lr: float = 4e-3
     batch_size: int = 32
     weight_decay: float = 0.05
     n_steps: int = None
     temperature: float = 0.012
+    chemical_fraction: float = 0.0
 
 
 @dataclass
-class FullTrainingConfig:
+class ACTrainingConfig:
     epochs: int = None #10
     predictor_lr: float = 1e-3
     batch_size: int = 32
     weight_decay: float = 0.05
     n_steps: int = None
     mask_anneal_pct: float = 0.0
+    mask_anneal_floor: float = 0.0
+    p_uncond: float = 0.0
+    beta_nll_target: float = 0.2
+    beta_nll_anneal_pct: float = 0.3
+    composer_lr_mult: float = 0.1
 
 
 @dataclass
