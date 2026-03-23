@@ -245,6 +245,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg: EncoderTrainingCo
                     'num_genes': model_cfg.num_genes, 'embed_dim': model_cfg.embed_dim,
                     'n_layer': model_cfg.n_layer, 'heads': model_cfg.heads,
                     'batch_size': cfg.batch_size, 'verbose': False,
+                    'eval_split': 'val',
                 }
                 ckpt_name = f'biojepa_{VERSION}_encoder_final.pt' if last_step else f'biojepa_{VERSION}_encoder_epoch_{epoch}_step{step}.pt'
                 model.eval()
@@ -601,7 +602,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
                         z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
                         pred_delta = decoder(z_pred_mu) - decoder(z_context)
                         real_delta = b.case - b.control
-                        val_loss = loss_fn(pred_delta, real_delta)
+                        val_loss = loss_fn(pred_delta[b.gene_mask], real_delta[b.gene_mask])
                     val_loss_accum += val_loss.item()
                 avg_val_loss = val_loss_accum / val_loss_steps
                 print(f'Decoder Step {step} | val loss: {avg_val_loss:.4f}')
@@ -627,7 +628,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
             pred_delta = decoder(z_pred_mu) - decoder(z_context)
             real_delta = b.case - b.control
-            loss = loss_fn(pred_delta, real_delta)
+            loss = loss_fn(pred_delta[b.gene_mask], real_delta[b.gene_mask])
         loss.backward()
         optimizer.step()
         scheduler.step()

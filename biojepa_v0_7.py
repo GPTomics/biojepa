@@ -711,6 +711,10 @@ class BioJepa(nn.Module):
         with torch.autocast(device_type='cuda', enabled=False):
             variance = torch.exp(pred_logvar)
             nll = F.gaussian_nll_loss(pred_mu.float(), target_latents.float(), variance, reduction='none')
+            if unknown_mask is not None:
+                measured = ~unknown_mask
+                nll = nll[measured]
+                variance = variance[measured]
             rec_loss = (nll * variance.detach().pow(beta_nll)).mean() if beta_nll > 0 else nll.mean()
 
         if return_components:

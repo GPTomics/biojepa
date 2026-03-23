@@ -79,34 +79,47 @@ class _RunningMeans:
     def __init__(self, n_genes, embed_dim=0):
         z = lambda: np.zeros(n_genes, dtype=np.float64)
         self._sums = defaultdict(lambda: {'pd': z(), 'rd': z(), 'pa': z(), 'ra': z(), 'ctrl': z()})
-        self._counts = defaultdict(int)
+        self._gene_counts = defaultdict(lambda: np.zeros(n_genes, dtype=np.int64))
+        self._sample_counts = defaultdict(int)
         self._embed_dim = embed_dim
         if embed_dim > 0:
             self._latent_sums = defaultdict(lambda: np.zeros(embed_dim, dtype=np.float64))
 
-    def add(self, key, pred_delta, real_delta, pred_abs, real_abs, control, latent_delta=None):
+    def add(self, key, pred_delta, real_delta, pred_abs, real_abs, control, gene_mask=None, latent_delta=None):
         s = self._sums[key]
-        s['pd'] += pred_delta
-        s['rd'] += real_delta
-        s['pa'] += pred_abs
-        s['ra'] += real_abs
-        s['ctrl'] += control
-        self._counts[key] += 1
+        if gene_mask is not None:
+            s['pd'] += np.where(gene_mask, pred_delta, 0.0)
+            s['rd'] += np.where(gene_mask, real_delta, 0.0)
+            s['pa'] += np.where(gene_mask, pred_abs, 0.0)
+            s['ra'] += np.where(gene_mask, real_abs, 0.0)
+            s['ctrl'] += np.where(gene_mask, control, 0.0)
+            self._gene_counts[key] += gene_mask.astype(np.int64)
+        else:
+            s['pd'] += pred_delta
+            s['rd'] += real_delta
+            s['pa'] += pred_abs
+            s['ra'] += real_abs
+            s['ctrl'] += control
+            self._gene_counts[key] += 1
+        self._sample_counts[key] += 1
         if latent_delta is not None and self._embed_dim > 0:
             self._latent_sums[key] += latent_delta
 
     def finalize(self):
         keys = list(self._sums.keys())
-        def _mean(field):
-            return {k: (self._sums[k][field] / self._counts[k]).astype(np.float32) for k in keys}
+        def _gene_mean(field):
+            return {k: (self._sums[k][field] / np.maximum(self._gene_counts[k], 1)).astype(np.float32) for k in keys}
         result = {
-            'mean_pred_deltas': _mean('pd'), 'mean_real_deltas': _mean('rd'),
-            'mean_pred_abs': _mean('pa'), 'mean_real_abs': _mean('ra'),
-            'mean_control_states': _mean('ctrl'),
+            'mean_pred_deltas': _gene_mean('pd'), 'mean_real_deltas': _gene_mean('rd'),
+            'mean_pred_abs': _gene_mean('pa'), 'mean_real_abs': _gene_mean('ra'),
+            'mean_control_states': _gene_mean('ctrl'),
         }
         if self._embed_dim > 0:
-            result['mean_latent_deltas'] = {k: (self._latent_sums[k] / self._counts[k]).astype(np.float32) for k in keys}
+            result['mean_latent_deltas'] = {k: (self._latent_sums[k] / self._sample_counts[k]).astype(np.float32) for k in keys}
         return keys, result
+
+    def get_gene_masks(self):
+        return {k: self._gene_counts[k] > 0 for k in self._sums.keys()}
 
 
 def _build_multi_pert_key(all_target_idx, all_seq_idx, all_modality, all_mode, n_perts, cell_type):
@@ -541,7 +554,6 @@ class EvalContext:
         ds_running = defaultdict(lambda: _RunningMeans(N, E))
         ct_running = defaultdict(lambda: _RunningMeans(N, E))
 
-        pert_gene_masks = {}
         sample_pert_ids, sample_target_ids, sample_pert_mods = [], [], []
         sample_mses, sample_correlations = [], []
         sample_n_perts, sample_cell_types, sample_doses = [], [], []
@@ -633,22 +645,20 @@ class EvalContext:
                 ld_i = z_latent_delta[i]
                 if n_perts_np[i] > 1:
                     mp_key = _build_multi_pert_key(all_target_idx_np[i], all_seq_idx_np[i], all_modality_np[i], all_mode_np[i], int(n_perts_np[i]), cell_type_np[i])
-                    multi_pert_global.add(mp_key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
+                    multi_pert_global.add(mp_key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], gene_mask=gm_i, latent_delta=ld_i)
                     multi_pert_first_seq_idx[mp_key] = int(p_idx_np[i])
                 else:
-                    bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
-                    if key not in pert_gene_masks and hasattr(batch, 'gene_mask') and batch.gene_mask is not None:
-                        pert_gene_masks[key] = batch.gene_mask[i].cpu().numpy().astype(np.bool_)
+                    bulk_global.add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], gene_mask=gm_i, latent_delta=ld_i)
 
                 ds_name = test_loader.dataset_id_to_name.get(int(ds_id_np[i]), 'unknown')
                 if n_perts_np[i] == 1:
-                    ds_running[ds_name].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
+                    ds_running[ds_name].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], gene_mask=gm_i, latent_delta=ld_i)
                 ds_sample_mses[ds_name].append(sample_mse)
                 ds_sample_correlations[ds_name].append(sample_corr)
 
                 ct = int(cell_type_np[i])
                 if n_perts_np[i] == 1:
-                    ct_running[ct].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], latent_delta=ld_i)
+                    ct_running[ct].add(key, pred_delta_np[i], real_delta_np[i], pred_abs_np[i], real_abs_np[i], cont_x_np[i], gene_mask=gm_i, latent_delta=ld_i)
                 ct_sample_mses[ct].append(sample_mse)
                 ct_sample_correlations[ct].append(sample_corr)
 
@@ -657,7 +667,9 @@ class EvalContext:
 
         _flush_shard()
         pert_keys, bulk_result = bulk_global.finalize()
+        pert_gene_masks = bulk_global.get_gene_masks()
         multi_pert_keys, multi_pert_bulk = multi_pert_global.finalize()
+        multi_pert_gene_masks = multi_pert_global.get_gene_masks()
         print(f'Aggregated {len(pert_keys)} single-pert, {len(multi_pert_keys)} multi-pert perturbations, {len(sample_mses)} samples, {shard_idx} shards')
 
         global_mean_control_total = float(np.concatenate(all_control_totals).mean())
@@ -683,12 +695,13 @@ class EvalContext:
         }
         result['multi_pert_keys'] = multi_pert_keys
         result['multi_pert_first_seq_idx'] = multi_pert_first_seq_idx
+        result['multi_pert_gene_masks'] = multi_pert_gene_masks
         result.update({f'multi_pert_{k}': v for k, v in multi_pert_bulk.items()})
 
         by_dataset = {}
         for ds_name in sorted(ds_running.keys()):
             ds_keys, ds_bulk = ds_running[ds_name].finalize()
-            ds_pgm = {k: pert_gene_masks[k] for k in ds_keys if k in pert_gene_masks}
+            ds_pgm = ds_running[ds_name].get_gene_masks()
             by_dataset[ds_name] = {
                 'pert_keys': ds_keys, **ds_bulk,
                 'pert_gene_masks': ds_pgm,
@@ -701,7 +714,7 @@ class EvalContext:
         by_cell_type = {}
         for ct in ct_running:
             ct_keys, ct_bulk = ct_running[ct].finalize()
-            ct_pgm = {k: pert_gene_masks[k] for k in ct_keys if k in pert_gene_masks}
+            ct_pgm = ct_running[ct].get_gene_masks()
             by_cell_type[ct] = {
                 'pert_keys': ct_keys, **ct_bulk,
                 'pert_gene_masks': ct_pgm,
