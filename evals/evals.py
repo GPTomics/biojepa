@@ -118,6 +118,21 @@ def _build_multi_pert_key(all_target_idx, all_seq_idx, all_modality, all_mode, n
     return (tuple(sorted(slot_ids)), int(cell_type))
 
 
+def _build_sample_gene_masks(inf, dataset_gene_masks):
+    if not dataset_gene_masks:
+        return None
+    ds_ids = inf.get('sample_dataset_ids')
+    ds_id_to_name = inf.get('dataset_id_to_name', {})
+    if ds_ids is None:
+        return None
+    n_genes = len(next(iter(dataset_gene_masks.values())))
+    masks = np.ones((len(ds_ids), n_genes), dtype=np.bool_)
+    for ds_id, ds_name in ds_id_to_name.items():
+        if ds_name in dataset_gene_masks:
+            masks[ds_ids == ds_id] = dataset_gene_masks[ds_name]
+    return masks
+
+
 class _LazyNpzDict(dict):
     '''Dict that lazy-loads heavy arrays from shard .npz files on first access.'''
     def __init__(self, data, shard_paths):
@@ -164,6 +179,7 @@ class EvalContext:
         self._norman_combo_mapping = None
         self._norman_gi_subtypes = None
         self._dataset_splits = None
+        self._dataset_gene_masks = None
 
     @classmethod
     def from_trained_model(cls, biojepa_model, data_root, ref_dir, config, decoder=None):
@@ -183,7 +199,7 @@ class EvalContext:
         return {
             'data_dir': data_root,
             'train_dir': data_root / 'predictor_t',
-            'checkpoint_dir': checkpoint_root / 'checkpoints',
+            'checkpoint_dir': checkpoint_root / 'checkpoint',
             'pert_dir': data_root / 'pert_embd',
             'ref_dir': ref_dir
         }
@@ -449,6 +465,17 @@ class EvalContext:
         return self._dataset_splits
 
     @property
+    def dataset_gene_masks(self):
+        if self._dataset_gene_masks is None:
+            path = self.paths['data_dir'] / 'dataset_gene_masks.json'
+            if path.exists():
+                with open(path) as f:
+                    self._dataset_gene_masks = {k: np.array(v, dtype=np.bool_) for k, v in json.load(f).items()}
+                if self.config['verbose']:
+                    print(f'Loaded dataset gene masks: {list(self._dataset_gene_masks.keys())}')
+        return self._dataset_gene_masks
+
+    @property
     def test_inference(self):
         if self._test_inference is None:
             if not self._load_inference_cache():
@@ -565,6 +592,7 @@ class EvalContext:
             n_perts_np = batch.n_perts.cpu().numpy()
             cell_type_np = batch.cell_type.cpu().numpy()
             dose_np = batch.dose.cpu().numpy()
+            gene_mask_np = batch.gene_mask.cpu().numpy().astype(np.bool_) if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
             all_seq_idx_np = batch.seq_idx.cpu().numpy()
             all_target_idx_np = batch.target_idx.cpu().numpy()
             all_modality_np = batch.modality.cpu().numpy()
@@ -590,7 +618,8 @@ class EvalContext:
             for i in range(B):
                 key = (int(p_idx_np[i]), int(p_target_np[i]), int(p_mod_np[i]), int(p_mode_np[i]), int(cell_type_np[i]))
 
-                sample_mse = float(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
+                gm_i = gene_mask_np[i] if gene_mask_np is not None else None
+                sample_mse = float(np.mean((pred_delta_np[i][gm_i] - real_delta_np[i][gm_i])**2)) if gm_i is not None else float(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
                 top_20_idx = np.argsort(np.abs(real_delta_np[i]))[-20:]
                 p_top, t_top = pred_delta_np[i][top_20_idx], real_delta_np[i][top_20_idx]
                 if np.std(p_top) > 1e-9 and np.std(t_top) > 1e-9:
@@ -659,8 +688,10 @@ class EvalContext:
         by_dataset = {}
         for ds_name in sorted(ds_running.keys()):
             ds_keys, ds_bulk = ds_running[ds_name].finalize()
+            ds_pgm = {k: pert_gene_masks[k] for k in ds_keys if k in pert_gene_masks}
             by_dataset[ds_name] = {
                 'pert_keys': ds_keys, **ds_bulk,
+                'pert_gene_masks': ds_pgm,
                 'sample_mses': np.array(ds_sample_mses[ds_name]),
                 'sample_correlations': np.array(ds_sample_correlations[ds_name]),
             }
@@ -670,8 +701,10 @@ class EvalContext:
         by_cell_type = {}
         for ct in ct_running:
             ct_keys, ct_bulk = ct_running[ct].finalize()
+            ct_pgm = {k: pert_gene_masks[k] for k in ct_keys if k in pert_gene_masks}
             by_cell_type[ct] = {
                 'pert_keys': ct_keys, **ct_bulk,
+                'pert_gene_masks': ct_pgm,
                 'sample_mses': np.array(ct_sample_mses[ct]),
                 'sample_correlations': np.array(ct_sample_correlations[ct]),
             }
@@ -1051,6 +1084,7 @@ def _reconstruction(ctx):
     n_genes = ctx.config['num_genes']
 
     all_emb, all_expr = [], []
+    all_gene_masks = []
     with torch.no_grad():
         for _ in tqdm(range(test_steps), desc='reconstruction: Extracting embeddings', disable=not verbose):
             batch = test_loader.next_batch()
@@ -1059,9 +1093,12 @@ def _reconstruction(ctx):
             emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).cpu().numpy()
             all_emb.append(emb)
             all_expr.append(cont_x.cpu().numpy())
+            if hasattr(batch, 'gene_mask') and batch.gene_mask is not None:
+                all_gene_masks.append(batch.gene_mask.cpu().numpy().astype(np.bool_))
 
     embeddings = np.concatenate(all_emb, axis=0)
     expressions = np.concatenate(all_expr, axis=0)
+    gene_masks = np.concatenate(all_gene_masks, axis=0) if all_gene_masks else None
 
     n_samples = embeddings.shape[0]
     gene_perm = np.random.RandomState(42).permutation(n_genes)
@@ -1072,6 +1109,11 @@ def _reconstruction(ctx):
     y_train = expressions[:, train_genes].reshape(-1)
     X_test = embeddings[:, test_genes, :].reshape(-1, embeddings.shape[-1])
     y_test = expressions[:, test_genes].reshape(-1)
+    if gene_masks is not None:
+        train_measured = gene_masks[:, train_genes].reshape(-1)
+        test_measured = gene_masks[:, test_genes].reshape(-1)
+        X_train, y_train = X_train[train_measured], y_train[train_measured]
+        X_test, y_test = X_test[test_measured], y_test[test_measured]
 
     class ReconMLP(nn.Module):
         def __init__(self, d_in, d_hidden=64):
@@ -1309,19 +1351,24 @@ def _latent_space_health(ctx):
 # FULL MODEL EVALS
 # =============================================================================
 
-def _compute_expression_prediction(inf, n_genes):
+def _compute_expression_prediction(inf, n_genes, pert_gene_masks=None):
     pert_keys = inf['pert_keys']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
     mean_pred_abs, mean_real_abs = inf['mean_pred_abs'], inf['mean_real_abs']
     mean_control_states = inf['mean_control_states']
     sample_mses, sample_correlations = inf['sample_mses'], inf['sample_correlations']
 
+    def _masked(arr, key):
+        if pert_gene_masks and key in pert_gene_masks:
+            return arr[pert_gene_masks[key]]
+        return arr
+
     TOP_K = 50
     per_pert_r2_all, per_pert_r2_top50, per_pert_mse = [], [], []
     per_pert_pearson_abs, per_pert_pearson_delta, per_pert_pearson_top50 = [], [], []
     for key in pert_keys:
-        pred_abs, real_abs = mean_pred_abs[key], mean_real_abs[key]
-        pred_delta, real_delta = mean_pred_deltas[key], mean_real_deltas[key]
+        pred_abs, real_abs = _masked(mean_pred_abs[key], key), _masked(mean_real_abs[key], key)
+        pred_delta, real_delta = _masked(mean_pred_deltas[key], key), _masked(mean_real_deltas[key], key)
         if np.std(real_abs) > 1e-9:
             per_pert_r2_all.append(r2_score(real_abs, pred_abs))
         top_k_idx = np.argsort(np.abs(real_delta))[-TOP_K:]
@@ -1364,8 +1411,17 @@ def _compute_expression_prediction(inf, n_genes):
             group_to_keys[group].append(key)
 
         groups = list(group_to_keys.keys())
-        grouped_pred = np.array([np.mean([mean_pred_deltas[k] for k in group_to_keys[g]], axis=0) for g in groups])
-        grouped_real = np.array([np.mean([mean_real_deltas[k] for k in group_to_keys[g]], axis=0) for g in groups])
+        if pert_gene_masks:
+            common_mask = np.ones(len(mean_pred_deltas[pert_keys[0]]), dtype=bool)
+            for key in pert_keys:
+                km = pert_gene_masks.get(key)
+                if km is not None:
+                    common_mask &= km
+            grouped_pred = np.array([np.mean([mean_pred_deltas[k][common_mask] for k in group_to_keys[g]], axis=0) for g in groups])
+            grouped_real = np.array([np.mean([mean_real_deltas[k][common_mask] for k in group_to_keys[g]], axis=0) for g in groups])
+        else:
+            grouped_pred = np.array([np.mean([mean_pred_deltas[k] for k in group_to_keys[g]], axis=0) for g in groups])
+            grouped_real = np.array([np.mean([mean_real_deltas[k] for k in group_to_keys[g]], axis=0) for g in groups])
         g_pred_sq = np.sum(grouped_pred**2, axis=1)
         g_real_sq = np.sum(grouped_real**2, axis=1)
         g_dist_matrix = g_pred_sq[:, None] + g_real_sq[None, :] - 2.0 * grouped_pred @ grouped_real.T
@@ -1374,14 +1430,13 @@ def _compute_expression_prediction(inf, n_genes):
         centroid_acc = 0.0
         groups = []
 
-    # Fraction beating mean baseline
     n_beat, n_eval_baseline = 0, 0
     for key in pert_keys:
-        real_abs = mean_real_abs[key]
+        real_abs = _masked(mean_real_abs[key], key)
         if np.std(real_abs) < 1e-9:
             continue
-        pred_abs = mean_pred_abs[key]
-        control = mean_control_states[key]
+        pred_abs = _masked(mean_pred_abs[key], key)
+        control = _masked(mean_control_states[key], key)
         if np.std(pred_abs) > 1e-9:
             r_model, _ = pearsonr(pred_abs, real_abs)
         else:
@@ -1396,15 +1451,15 @@ def _compute_expression_prediction(inf, n_genes):
         if r_model > r_baseline:
             n_beat += 1
 
-    pred_severity = np.array([np.linalg.norm(mean_pred_deltas[k]) for k in pert_keys])
-    real_severity = np.array([np.linalg.norm(mean_real_deltas[k]) for k in pert_keys])
+    pred_severity = np.array([np.linalg.norm(_masked(mean_pred_deltas[k], k)) for k in pert_keys])
+    real_severity = np.array([np.linalg.norm(_masked(mean_real_deltas[k], k)) for k in pert_keys])
     r, _ = pearsonr(pred_severity, real_severity)
     severity_pearson = 0.0 if np.isnan(r) else float(r)
     r, _ = spearmanr(pred_severity, real_severity)
     severity_spearman = 0.0 if np.isnan(r) else float(r)
 
-    all_pred = np.concatenate([mean_pred_deltas[k] for k in pert_keys])
-    all_real = np.concatenate([mean_real_deltas[k] for k in pert_keys])
+    all_pred = np.concatenate([_masked(mean_pred_deltas[k], k) for k in pert_keys])
+    all_real = np.concatenate([_masked(mean_real_deltas[k], k) for k in pert_keys])
     all_errors, all_magnitudes = all_pred - all_real, np.abs(all_real)
     magnitude_bins = [0, 0.25, 0.5, 1.0, 1.5, 2.0, np.inf]
     bin_labels = ['0-0.25', '0.25-0.5', '0.5-1.0', '1.0-1.5', '1.5-2.0', '2.0+']
@@ -1455,12 +1510,12 @@ def _expression_prediction(ctx):
     '''Can we predict gene expression after perturbation?'''
     inf = ctx.test_inference
     n_genes = ctx.config['num_genes']
-    result = _compute_expression_prediction(inf, n_genes)
+    result = _compute_expression_prediction(inf, n_genes, pert_gene_masks=inf.get('pert_gene_masks'))
     print(f'expression_prediction: Pearson={result["perturbation_level"]["pearson_all_genes"]["mean"]:.4f}, R2={result["perturbation_level"]["r2_all_genes"]["mean"]:.4f}, Centroid_acc={result["centroid_accuracy"]["accuracy"]:.4f}')
     by_dataset = {}
     for ds, ds_inf in inf.get('by_dataset', {}).items():
         if len(ds_inf.get('pert_keys', [])) > 0:
-            by_dataset[ds] = _compute_expression_prediction(ds_inf, n_genes)
+            by_dataset[ds] = _compute_expression_prediction(ds_inf, n_genes, pert_gene_masks=ds_inf.get('pert_gene_masks'))
     result['by_dataset'] = by_dataset
     result['gears_benchmark'] = _gears_benchmark_summary(result)
 
@@ -1475,7 +1530,7 @@ def _expression_prediction(ctx):
         for ct_id, ct_inf in by_cell_type.items():
             if len(ct_inf.get('pert_keys', [])) > 0:
                 ct_name = ct_id_to_name.get(ct_id, f'cell_type_{ct_id}')
-                result['by_cell_type'][ct_name] = _compute_expression_prediction(ct_inf, n_genes)
+                result['by_cell_type'][ct_name] = _compute_expression_prediction(ct_inf, n_genes, pert_gene_masks=ct_inf.get('pert_gene_masks'))
 
     return result
 
@@ -1499,12 +1554,17 @@ def _ndcg_at_k(pred_rank, true_rank, k):
     return dcg / idcg if idcg > 0 else 0.0
 
 
-def _compute_gene_level_analysis(inf, n_genes, direction_threshold):
+def _compute_gene_level_analysis(inf, n_genes, direction_threshold, pert_gene_masks=None):
     pert_keys = inf['pert_keys']
     mean_pred_deltas, mean_real_deltas = inf['mean_pred_deltas'], inf['mean_real_deltas']
 
-    all_pred_dir = np.concatenate([_classify_direction(mean_pred_deltas[k], direction_threshold) for k in pert_keys])
-    all_real_dir = np.concatenate([_classify_direction(mean_real_deltas[k], direction_threshold) for k in pert_keys])
+    def _masked(arr, key):
+        if pert_gene_masks and key in pert_gene_masks:
+            return arr[pert_gene_masks[key]]
+        return arr
+
+    all_pred_dir = np.concatenate([_classify_direction(_masked(mean_pred_deltas[k], k), direction_threshold) for k in pert_keys])
+    all_real_dir = np.concatenate([_classify_direction(_masked(mean_real_deltas[k], k), direction_threshold) for k in pert_keys])
     overall_accuracy = accuracy_score(all_real_dir, all_pred_dir)
     f1_up = f1_score(all_real_dir, all_pred_dir, labels=[1], average='macro', zero_division=0)
     f1_down = f1_score(all_real_dir, all_pred_dir, labels=[-1], average='macro', zero_division=0)
@@ -1513,14 +1573,15 @@ def _compute_gene_level_analysis(inf, n_genes, direction_threshold):
     TOP_K_DIR = 50
     top_deg_pred, top_deg_real = [], []
     for key in pert_keys:
-        top_k_idx = np.argsort(np.abs(mean_real_deltas[key]))[-TOP_K_DIR:]
-        top_deg_pred.append(_classify_direction(mean_pred_deltas[key][top_k_idx], direction_threshold))
-        top_deg_real.append(_classify_direction(mean_real_deltas[key][top_k_idx], direction_threshold))
+        pd, rd = _masked(mean_pred_deltas[key], key), _masked(mean_real_deltas[key], key)
+        top_k_idx = np.argsort(np.abs(rd))[-TOP_K_DIR:]
+        top_deg_pred.append(_classify_direction(pd[top_k_idx], direction_threshold))
+        top_deg_real.append(_classify_direction(rd[top_k_idx], direction_threshold))
     top_deg_accuracy = accuracy_score(np.concatenate(top_deg_real), np.concatenate(top_deg_pred))
 
     all_magnitudes, all_correct = [], []
     for key in pert_keys:
-        real_delta, pred_delta = mean_real_deltas[key], mean_pred_deltas[key]
+        real_delta, pred_delta = _masked(mean_real_deltas[key], key), _masked(mean_pred_deltas[key], key)
         all_magnitudes.extend(np.abs(real_delta))
         all_correct.extend(_classify_direction(pred_delta, direction_threshold) == _classify_direction(real_delta, direction_threshold))
     all_magnitudes, all_correct = np.array(all_magnitudes), np.array(all_correct)
@@ -1534,20 +1595,24 @@ def _compute_gene_level_analysis(inf, n_genes, direction_threshold):
             accuracy_by_magnitude[bin_labels[i]] = {'accuracy': float(all_correct[mask].mean()), 'count': int(mask.sum())}
 
     K_VALUES = [10, 20, 50, 100]
-    deg_results = {k: {'precision': [], 'ndcg': [], 'overlap': []} for k in K_VALUES}
+    deg_results = {k: {'precision': [], 'ndcg': [], 'overlap': [], 'vs_random': []} for k in K_VALUES}
     for key in pert_keys:
-        pred_rank = np.argsort(np.abs(mean_pred_deltas[key]))[::-1]
-        true_rank = np.argsort(np.abs(mean_real_deltas[key]))[::-1]
+        pd, rd = _masked(mean_pred_deltas[key], key), _masked(mean_real_deltas[key], key)
+        n_measured = len(pd)
+        pred_rank = np.argsort(np.abs(pd))[::-1]
+        true_rank = np.argsort(np.abs(rd))[::-1]
         for k in K_VALUES:
             deg_results[k]['precision'].append(_precision_at_k(pred_rank, true_rank, k))
             deg_results[k]['ndcg'].append(_ndcg_at_k(pred_rank, true_rank, k))
-            deg_results[k]['overlap'].append(len(set(pred_rank[:k]) & set(true_rank[:k])))
+            overlap = len(set(pred_rank[:k]) & set(true_rank[:k]))
+            deg_results[k]['overlap'].append(overlap)
+            deg_results[k]['vs_random'].append(overlap / (k * k / n_measured) if n_measured > 0 else 0.0)
 
     K_DIR = 20
     up_precisions, down_precisions = [], []
     de_jaccards = []
     for key in pert_keys:
-        pred_d, real_d = mean_pred_deltas[key], mean_real_deltas[key]
+        pred_d, real_d = _masked(mean_pred_deltas[key], key), _masked(mean_real_deltas[key], key)
         pred_up, real_up = set(np.argsort(pred_d)[-K_DIR:]), set(np.argsort(real_d)[-K_DIR:])
         pred_down, real_down = set(np.argsort(pred_d)[:K_DIR]), set(np.argsort(real_d)[:K_DIR])
         up_precisions.append(len(pred_up & real_up) / K_DIR)
@@ -1566,7 +1631,7 @@ def _compute_gene_level_analysis(inf, n_genes, direction_threshold):
             'accuracy_by_magnitude': accuracy_by_magnitude,
             'precision_up_at_20': float(np.mean(up_precisions)), 'precision_down_at_20': float(np.mean(down_precisions)),
         },
-        'top_deg_recovery': {str(k): {'precision': float(np.mean(deg_results[k]['precision'])), 'ndcg': float(np.mean(deg_results[k]['ndcg'])), 'overlap': float(np.mean(deg_results[k]['overlap'])), 'vs_random': float(np.mean(deg_results[k]['overlap']) / (k * k / n_genes))} for k in K_VALUES},
+        'top_deg_recovery': {str(k): {'precision': float(np.mean(deg_results[k]['precision'])), 'ndcg': float(np.mean(deg_results[k]['ndcg'])), 'overlap': float(np.mean(deg_results[k]['overlap'])), 'vs_random': float(np.mean(deg_results[k]['vs_random']))} for k in K_VALUES},
     }
     if de_jaccards:
         result['common_degs'] = {'jaccard_mean': float(np.mean(de_jaccards)), 'jaccard_median': float(np.median(de_jaccards)), 'n_perturbations': len(de_jaccards)}
@@ -1577,12 +1642,12 @@ def _gene_level_analysis(ctx, direction_threshold=0.25):
     '''Direction of effect + top DEG recovery analysis.'''
     inf = ctx.test_inference
     n_genes = ctx.config['num_genes']
-    result = _compute_gene_level_analysis(inf, n_genes, direction_threshold)
+    result = _compute_gene_level_analysis(inf, n_genes, direction_threshold, pert_gene_masks=inf.get('pert_gene_masks'))
     print(f'gene_level_analysis: Dir_acc={result["direction_of_effect"]["all_genes_accuracy"]:.4f}, Top50_acc={result["direction_of_effect"]["top50_degs_accuracy"]:.4f}')
     by_dataset = {}
     for ds, ds_inf in inf.get('by_dataset', {}).items():
         if len(ds_inf.get('pert_keys', [])) > 0:
-            by_dataset[ds] = _compute_gene_level_analysis(ds_inf, n_genes, direction_threshold)
+            by_dataset[ds] = _compute_gene_level_analysis(ds_inf, n_genes, direction_threshold, pert_gene_masks=ds_inf.get('pert_gene_masks'))
     result['by_dataset'] = by_dataset
     return result
 
@@ -1677,7 +1742,11 @@ def _perturbation_retrieval(ctx, n_eval=200):
                 continue
             key_bank_info = {**bank_info, 'mode': key[3]}
             preds = predict_all_deltas(mean_control_states[key], key_bank_info, gene_mask=pert_gene_masks.get(key))
-            sims = cos_sim(preds, mean_real_deltas[key])
+            gm = pert_gene_masks.get(key)
+            if gm is not None:
+                sims = cos_sim(preds[:, gm], mean_real_deltas[key][gm])
+            else:
+                sims = cos_sim(preds, mean_real_deltas[key])
             rank = int(np.where(np.argsort(sims)[::-1] == lookup_idx)[0][0]) + 1
             ranks.append(rank)
 
@@ -1697,7 +1766,7 @@ def _perturbation_retrieval(ctx, n_eval=200):
     return {'by_type': results_by_type}
 
 
-def _compute_uncertainty_calibration(inf, n_bins):
+def _compute_uncertainty_calibration(inf, n_bins, sample_gene_masks=None):
     pred_deltas = inf['sample_pred_deltas']
     real_deltas = inf['sample_real_deltas']
     sample_logvars = inf['sample_logvars']
@@ -1707,7 +1776,11 @@ def _compute_uncertainty_calibration(inf, n_bins):
     pert_modes = inf['sample_all_mode'][:, 0] if 'sample_all_mode' in inf else np.zeros(len(pert_ids), dtype=int)
     cell_types = inf['sample_cell_types'] if 'sample_cell_types' in inf else np.zeros(len(pert_ids), dtype=int)
 
-    sample_mse = np.mean((pred_deltas - real_deltas)**2, axis=1)
+    if sample_gene_masks is not None:
+        sq_err = (pred_deltas - real_deltas)**2 * sample_gene_masks
+        sample_mse = sq_err.sum(axis=1) / sample_gene_masks.sum(axis=1).clip(1)
+    else:
+        sample_mse = np.mean((pred_deltas - real_deltas)**2, axis=1)
     sample_unc = sample_logvars.mean(axis=1)
 
     r, _ = pearsonr(sample_unc, sample_mse)
@@ -1770,8 +1843,13 @@ def _compute_uncertainty_calibration(inf, n_bins):
         if len(indices) < 3:
             continue
         idx = np.array(indices)
-        observed_var = np.var(real_deltas[idx], axis=0)
-        predicted_var = np.mean(np.exp(sample_logvars[idx]), axis=0)
+        gm = sample_gene_masks[idx[0]] if sample_gene_masks is not None else None
+        if gm is not None:
+            observed_var = np.var(real_deltas[idx][:, gm], axis=0)
+            predicted_var = np.mean(np.exp(sample_logvars[idx][:, gm]), axis=0)
+        else:
+            observed_var = np.var(real_deltas[idx], axis=0)
+            predicted_var = np.mean(np.exp(sample_logvars[idx]), axis=0)
         if np.std(observed_var) > 1e-9 and np.std(predicted_var) > 1e-9:
             variance_r2s.append(float(r2_score(observed_var, predicted_var)))
 
@@ -1790,7 +1868,8 @@ def _compute_uncertainty_calibration(inf, n_bins):
 def _uncertainty_calibration(ctx, n_bins=10):
     '''Are confidence estimates meaningful?'''
     inf = ctx.test_inference
-    result = _compute_uncertainty_calibration(inf, n_bins)
+    sample_gene_masks = _build_sample_gene_masks(inf, ctx.dataset_gene_masks)
+    result = _compute_uncertainty_calibration(inf, n_bins, sample_gene_masks=sample_gene_masks)
     print(f'uncertainty_calibration: ECE={result["sample_level"]["expected_calibration_error"]:.4f}, Monotonicity={result["sample_level"]["monotonicity_score"]:.2%}')
     by_dataset = {}
     ds_id_to_name = inf.get('dataset_id_to_name', {})
@@ -1812,7 +1891,11 @@ def _uncertainty_calibration(ctx, n_bins=10):
             }
             if 'sample_n_perts' in inf:
                 ds_inf['sample_n_perts'] = inf['sample_n_perts'][mask]
-            by_dataset[ds_name] = _compute_uncertainty_calibration(ds_inf, n_bins)
+            ds_sgm = None
+            if ctx.dataset_gene_masks and ds_name in ctx.dataset_gene_masks:
+                n_ds = int(mask.sum())
+                ds_sgm = np.broadcast_to(ctx.dataset_gene_masks[ds_name], (n_ds, len(ctx.dataset_gene_masks[ds_name]))).copy()
+            by_dataset[ds_name] = _compute_uncertainty_calibration(ds_inf, n_bins, sample_gene_masks=ds_sgm)
     result['by_dataset'] = by_dataset
     return result
 
@@ -1872,7 +1955,7 @@ def _action_vector_pathways(ctx):
     return {'config': {'n_pathways_kegg': len(gene_to_pathways)}, 'by_modality': results}
 
 
-def _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, delta_key='mean_pred_deltas'):
+def _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, delta_key='mean_pred_deltas', pert_gene_masks=None):
     valid_keys, valid_labels = [], []
     seen_keys = set()
     for key in inf['pert_keys']:
@@ -1894,7 +1977,15 @@ def _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, del
     if deltas is None:
         return {'error': f'{delta_key} not available'}
 
-    delta_matrix = np.array([deltas[k] for k in valid_keys])
+    if pert_gene_masks and delta_key != 'mean_latent_deltas':
+        common_mask = np.ones(len(deltas[valid_keys[0]]), dtype=bool)
+        for k in valid_keys:
+            km = pert_gene_masks.get(k)
+            if km is not None:
+                common_mask &= km
+        delta_matrix = np.array([deltas[k][common_mask] for k in valid_keys])
+    else:
+        delta_matrix = np.array([deltas[k] for k in valid_keys])
     return compute_multilabel_pathway_similarity(delta_matrix, valid_labels, min_pathway_size=3)
 
 
@@ -1912,7 +2003,7 @@ def _moa_matching(ctx):
             gene_to_target = json.load(f)
         target_to_gene = {tidx: gene.upper() for gene, tidx in gene_to_target.items() if not gene.startswith('ENSG')}
 
-    expr = _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_pred_deltas')
+    expr = _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_pred_deltas', pert_gene_masks=inf.get('pert_gene_masks'))
     latent = _compute_moa_matching(inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_latent_deltas')
 
     if 'error' not in expr:
@@ -1924,14 +2015,14 @@ def _moa_matching(ctx):
     for ds, ds_inf in inf.get('by_dataset', {}).items():
         if len(ds_inf.get('pert_keys', [])) > 0:
             by_dataset[ds] = {
-                'expression': _compute_moa_matching(ds_inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_pred_deltas'),
+                'expression': _compute_moa_matching(ds_inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_pred_deltas', pert_gene_masks=ds_inf.get('pert_gene_masks')),
                 'latent': _compute_moa_matching(ds_inf, gene_to_pathways, id_to_gene, target_to_gene, 'mean_latent_deltas'),
             }
 
     return {'expression': expr, 'latent': latent, 'by_dataset': by_dataset}
 
 
-def _compute_additive_baseline(combo_inf, single_deltas, single_gene_names, combo_to_genes, n_genes):
+def _compute_additive_baseline(combo_inf, single_deltas, single_gene_names, combo_to_genes, n_genes, gene_mask=None):
     gene_name_to_idx = {g: i for i, g in enumerate(single_gene_names)}
     model_mses, additive_mses, model_pearsons, additive_pearsons = [], [], [], []
     nonadd_model_mses, nonadd_pearsons = [], []
@@ -1948,6 +2039,9 @@ def _compute_additive_baseline(combo_inf, single_deltas, single_gene_names, comb
         real_delta = combo_inf['mean_real_deltas'][key][:n_genes]
         pred_delta = combo_inf['mean_pred_deltas'][key][:n_genes]
         additive_delta = single_deltas[idx_a, :n_genes] + single_deltas[idx_b, :n_genes]
+        additive_delta_full = additive_delta
+        if gene_mask is not None:
+            real_delta, pred_delta, additive_delta = real_delta[gene_mask], pred_delta[gene_mask], additive_delta[gene_mask]
 
         model_mse = float(np.mean((pred_delta - real_delta) ** 2))
         additive_mse = float(np.mean((additive_delta - real_delta) ** 2))
@@ -1969,7 +2063,7 @@ def _compute_additive_baseline(combo_inf, single_deltas, single_gene_names, comb
             r = pearsonr(pred_sub, real_sub)[0]
             nonadd_pearsons.append(0.0 if np.isnan(r) else float(r))
 
-        per_key_results[key] = {'genes': genes, 'model_mse': model_mse, 'additive_mse': additive_mse, 'additive_delta': additive_delta}
+        per_key_results[key] = {'genes': genes, 'model_mse': model_mse, 'additive_mse': additive_mse, 'additive_delta': additive_delta_full}
 
     if len(model_mses) == 0:
         skip = {'skipped': True, 'reason': 'no combos with both singles available'}
@@ -2036,7 +2130,9 @@ def _combination_perturbation(ctx):
         composition['modality_mix']['+'.join(mod_names)] += 1
     composition['modality_mix'] = dict(composition['modality_mix'])
 
-    expr_pred = _compute_expression_prediction(combo_inf, n_genes)
+    norman_mask = ctx.dataset_gene_masks.get('norman') if ctx.dataset_gene_masks else None
+    combo_pgm = {k: norman_mask for k in combo_inf['pert_keys']} if norman_mask is not None else None
+    expr_pred = _compute_expression_prediction(combo_inf, n_genes, pert_gene_masks=combo_pgm)
 
     combo_mapping = ctx.norman_combo_mapping
     single_deltas_data = ctx.norman_single_gene_deltas
@@ -2051,7 +2147,7 @@ def _combination_perturbation(ctx):
             genes = combo_mapping.get(str(sid)) if sid is not None else None
             combo_to_genes[key] = tuple(genes) if genes else None
         additive_result, nonadd_result, per_key_results = _compute_additive_baseline(
-            combo_inf, single_deltas_data['deltas'], single_deltas_data['gene_names'], combo_to_genes, n_genes
+            combo_inf, single_deltas_data['deltas'], single_deltas_data['gene_names'], combo_to_genes, n_genes, gene_mask=norman_mask
         )
 
     gi_subtypes = ctx.norman_gi_subtypes
@@ -2077,6 +2173,8 @@ def _combination_perturbation(ctx):
             pred_delta = combo_inf['mean_pred_deltas'][key][:n_genes]
             interaction_real = real_delta - kres['additive_delta']
             interaction_pred = pred_delta - kres['additive_delta']
+            if norman_mask is not None:
+                interaction_real, interaction_pred = interaction_real[norman_mask[:n_genes]], interaction_pred[norman_mask[:n_genes]]
             if np.std(interaction_real) > 1e-9 and np.std(interaction_pred) > 1e-9:
                 r = pearsonr(interaction_pred, interaction_real)[0]
                 by_subtype[subtype]['interaction_pearsons'].append(0.0 if np.isnan(r) else float(r))
@@ -2108,6 +2206,8 @@ def _combination_perturbation(ctx):
                 for key in split_keys:
                     pred_d = combo_inf['mean_pred_deltas'][key][:n_genes]
                     real_d = combo_inf['mean_real_deltas'][key][:n_genes]
+                    if norman_mask is not None:
+                        pred_d, real_d = pred_d[norman_mask[:n_genes]], real_d[norman_mask[:n_genes]]
                     split_mses.append(float(np.mean((pred_d - real_d) ** 2)))
                     top20 = np.argsort(np.abs(real_d))[-20:]
                     split_mses_top20.append(float(np.mean((pred_d[top20] - real_d[top20]) ** 2)))
@@ -2165,6 +2265,7 @@ def _dose_response(ctx):
     if sciplex_ds_id is None:
         return {'skipped': True, 'reason': 'sciplex dataset_id not found'}
     sciplex_mask = inf['sample_dataset_ids'] == sciplex_ds_id
+    sciplex_gene_mask = ctx.dataset_gene_masks.get('sciplex') if ctx.dataset_gene_masks else None
 
     slot0_dose = doses[sciplex_mask, 0]
     valid_dose_mask = slot0_dose > 0
@@ -2184,8 +2285,10 @@ def _dose_response(ctx):
     for i in range(len(valid_doses)):
         key = (int(pert_ids[i]), int(target_ids[i]), int(pert_mods[i]), int(pert_modes[i]), int(cell_types[i]))
         d = float(valid_doses[i])
-        drug_dose_pred_severity[key].append((d, float(np.linalg.norm(pred_deltas[i]))))
-        drug_dose_real_severity[key].append((d, float(np.linalg.norm(real_deltas[i]))))
+        pd_i = pred_deltas[i][sciplex_gene_mask] if sciplex_gene_mask is not None else pred_deltas[i]
+        rd_i = real_deltas[i][sciplex_gene_mask] if sciplex_gene_mask is not None else real_deltas[i]
+        drug_dose_pred_severity[key].append((d, float(np.linalg.norm(pd_i))))
+        drug_dose_real_severity[key].append((d, float(np.linalg.norm(rd_i))))
 
     monotonic_count, real_monotonic_count, total_pairs = 0, 0, 0
     all_doses_flat, all_pred_sevs_flat, all_real_sevs_flat = [], [], []
