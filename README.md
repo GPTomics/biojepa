@@ -1,7 +1,8 @@
-**In progress version:**  v0.6
-## V0.4 Technical Report [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/docs/technical_report_v0_4.pdf)
+**In progress version:**  v0.7
 
-# bio-JEPA
+## V0.6 Technical Report [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/docs/biojepa_ac_technical_report_v0_6.pdf)
+
+# BioJEPA-AC
 
 Our goal is to build a "world model" for cells as inspired by [V JEPA 2-AC](https://github.com/facebookresearch/vjepa2). This means that a successful model learns the causal physics of cell states. Because there are billions of potential drug and gene combinations, it is impossible and too expensive for scientists to test them all in a physical lab to see what works. A successful model would act like a digital simulator that predicts the results of these experiments instantly, allowing prediction of how cell types would react to different perturbations (e.g. therapeutics, gene knockout).
 
@@ -37,87 +38,6 @@ Beyond therapeutics, the model's learned representations enable biological disco
 
 **New Mechanism Discovery:** If the model requires a previously uncharacterized gene/protein to make accurate predictions, this provides evidence that the component is functionally essential to specific biological processes.
 
-## Current Performance
-
-*v0.6 results are preliminary and under investigation. See notes below each section.
-
-### Pretraining Evals (encoder quality)
-
-v0.6 trains on 6 datasets (10K genes) vs v0.5 single dataset (5K genes). Metrics not directly comparable due to task difficulty differences. Full test: 309,760 samples, 1,085 perturbations, 5 datasets.
-
-| Metric | v0.6* | v0.5 | v0.4 | Context |
-| - | - | - | - | - |
-| Batch Invariance Ratio | **0.851** | 0.167 | 0.215 | Higher = more bio vs technical. Within-dataset macro mean: 0.784 |
-| Perturbation Detection AUROC | **0.566** | — | — | norman 0.700, k562e 0.693, adamson 0.619, k562gw 0.550, sciplex 0.544 |
-| Reconstruction Pearson | **0.986** | — | — | Gene expression from embeddings |
-| Cell Type Accuracy | **99.3%** | — | — | 3 cell types in test data |
-| Embedding Consistency | **0.848** | — | — | Same-pert similarity ratio |
-| Essential Gene AUROC | 0.630 | **0.741** | 0.707 | v0.5 had K562-only home-field advantage |
-| KEGG Silhouette | **-0.072** | -0.083 | — | Pathway structure in gene embeddings |
-| Effective Dimensionality (90%) | **45** | — | — | Of 256 total dims |
-
-### Alignment Evals (composer quality)
-
-New in v0.6. Evaluates dual-pathway ActionComposer (sequence + target fusion).
-
-| Metric | v0.6* | Context |
-| - | - | - |
-| Mode Sensitivity Accuracy | **55.2%** | 7 modes, chance = 14.3% (3.9x) |
-| Paired Cosine Similarity (DNA) | 0.121 | Seq-target alignment quality |
-| Seq-to-Target Retrieval MRR | 0.0013 | Target: >0.6. Alignment weak |
-| Cross-Modality Consistency | **3.063** | Target: >>1. Same-target perts cluster |
-| Fused-to-Seq Cosine | 0.865 | Fusion still seq-dominated |
-| Target Family Probing (target) | **23.6%** (66x) | Raw ESM-2 embeddings carry signal |
-| Target Family Probing (fused) | **17.8%** (50x) | Fusion leverages some target info |
-
-### Full Model Evals (expression prediction)
-
-v0.6: 1,085 test perturbations, 10K genes, 5 datasets (309,760 samples). v0.5: 286 test perturbations, 5K genes, 1 dataset.
-
-| Metric | v0.6* | v0.5 | v0.4 | v0.3 | v0.2 | Context |
-| - | - | - | - | - | - | - |
-| **R² Top 50 DEGs (mean)** | **0.816** | 0.066 | 0.096 | 0.060 | -0.027 | The hard test |
-| **R² Top 50 DEGs (median)** | **0.849** | 0.341 | 0.325 | 0.255 | 0.269 | The hard test |
-| **Severity Spearman** | **0.638** | 0.471 | — | — | — | Predicting effect magnitude |
-| Severity Pearson | 0.738 | 0.835 | **0.870** | — | — | Predicting effect magnitude |
-| Global MSE | **0.204** | 0.489 | 0.498 | 0.515 | 0.790 | Lower is better |
-| Pearson R (Top 20) | 0.869 | 0.919 | **0.927** | 0.921 | 0.605 | Harder task (more perts/genes) |
-| R² All Genes (mean/median) | **0.964 / 0.971** | 0.930 / 0.940 | 0.918 / 0.927 | 0.902 / 0.910 | 0.942 / 0.956 | Inflated (most genes don't change) |
-| Direction Accuracy (All) | **98.9%** | 89.7% | 87.7% | — | — | UP/DOWN/UNCHANGED |
-| Direction Accuracy (Top 50) | **77.6%** | 28.5% | 34.0% | — | — | On genes that change most |
-| Centroid Accuracy | **0.034** | — | — | — | — | New hard metric (random ~0.001) |
-| Pearson Delta (all genes) | **0.216** | — | — | — | — | New hard metric, baseline-adjusted |
-| vs Baseline Beat Rate | 0.9% | — | — | — | — | New hard metric |
-| DEG Precision@20 | 1.9% | **4.8%** | 3.1% | — | — | Random baseline ~0.1% |
-| DEG vs Random @20 | 9.6x | **12.0x** | 7.8x | — | — | Improvement over chance |
-| MOA Similarity Ratio | **1.142** | 1.005 | 1.006 | — | — | >1 = same-pathway more similar |
-| MOA p-value | **6.4e-99** | 0.267 | — | — | — | Statistical significance |
-| Combo Pearson Delta | 0.286 | — | — | — | — | 8 Norman dual-gene perturbations |
-| Combo Additive Baseline | 0.781 | — | — | — | — | Additive model outperforms |
-| Retrieval MRR (DNA) | 0.0005 | **0.007** | 0.010 | — | — | Bank: 11.6K vs 1.25K |
-| Retrieval MRR (Chemical) | **0.036** | — | — | — | — | New capability (188 compounds) |
-| Uncertainty ECE | 0.572 | 0.281 | **0.135** | — | — | Lower is better. v0.6 anti-calibrated |
-| Action Vector Silhouette | **-0.339** | -0.412 | — | — | — | Pathway structure in action vectors |
-
-#### Dataset Breakdown
-
-| Dataset | Perts | Pearson Delta | R² Top-50 DEGs | Centroid Acc |
-| - | - | - | - | - |
-| k562gw | 1,053 | 0.232 | 0.828 | 0.068 |
-| k562e_raw | 286 | 0.221 | 0.783 | 0.017 |
-| adamson | 9 | 0.018 | 0.832 | 0.222 |
-| norman | 8 | 0.286 | 0.679 | 0.125 |
-| sciplex | 14 | 0.078 | 0.956 | 0.143 |
-
-#### GEARS Benchmark
-
-| Dataset | Perts | Splits | Pearson All Genes | Pearson Delta |
-| - | - | - | - | - |
-| Replogle K562 | 286 | GEARS official | 0.976 | 0.221 |
-| Adamson | 9 | NOT GEARS | 0.983 | 0.018 |
-
-**Notes:** R² on all genes looks good because ~95% of genes barely change -- R² on Top 50 DEGs is the real test. Centroid accuracy and vs-baseline beat rate are new hard metrics: centroid accuracy measures whether each perturbation's predicted centroid is closest to the correct actual centroid (random ~1/1085), and beat rate measures how often the model outperforms a mean baseline. The R² top-50 DEGs jump (was 0.442 on partial test, now 0.816 on full test) needs investigation -- may partly reflect full-test composition (k562gw dominates with 1,053 of 1,085 perts). Adamson pearson_delta ~0 suggests model is not learning perturbation-specific effects on that dataset. Combo perturbations (Norman dual-gene) lose to an additive baseline (model: 0.286 vs additive: 0.781 pearson delta). For detailed metric interpretation, see `docs/eval_planning.md`. For SOTA analysis, see `biojepa_private/docs/sota_evals.md`.
-
 ### What Makes BioJEPA Different
 
 | Capability | BioJEPA | GEARS | scLAMBDA | LPM |
@@ -129,11 +49,11 @@ v0.6: 1,085 test perturbations, 10K genes, 5 datasets (309,760 samples). v0.5: 2
 | Missing data fallback | Yes | N/A | N/A | Partial |
 | Mode conditioning | 9 modes (FiLM) | No | No | No |
 
-## v0.6 Architecture (In Progress)
+## v0.6 Architecture
 
-**Training:** 6 datasets (~5.5M cells, see Datasets table below), 16,384 genes. Config: embd=256, heads=4, layers=6, lat_dim=320, mod_dim=64, max_perts=4.
+**Training:** 6 datasets (~5.5M cells, see Datasets table below), 10,000 genes. PT:50 Ep, Align:10,000 Ep, AC:20 Ep, Dec:10 Ep. Params: Student/Teacher 7.98M, ACPredictor 10.04M, Composer 1.48M. Config: embd=256, heads=4, layers=6, lat_dim=320, mod_dim=64, max_perts=4.
 
-1. **Dual-Pathway Perturbation Encoding with Sequence-Target Fusion:** The ActionComposer separately encodes the perturbation sequence (sgRNA, protein, or chemical) and its biological target (protein), then fuses them via concat+MLP when both are available. Sequences use modality-specific projectors (DNA via [NucleotideTransformer](https://huggingface.co/InstaDeepAI/NTv3_650M_pre): 1536->D, protein via [ESM-2](https://huggingface.co/facebook/esm2_t6_8M_UR50D): 320->D, chemical via [ChemMRL](https://huggingface.co/Derify/ChemMRL): 1024->D). When only one input is available, it passes through directly; a learned unknown embedding handles missing data.
+1. **Dual-Pathway Perturbation Encoding with Sequence-Target Fusion:** The ActionComposer separately encodes the perturbation sequence (sgRNA, protein, or chemical) and its biological target (protein), then fuses them via additive combination when both are available. Sequences use modality-specific projectors (DNA via [NucleotideTransformer](https://huggingface.co/InstaDeepAI/NTv3_650M_pre): 1536->D, protein via [ESM-2](https://huggingface.co/facebook/esm2_t6_8M_UR50D): 320->D, chemical via [ChemMRL](https://huggingface.co/Derify/ChemMRL): 1024->D). When only one input is available, it passes through directly; a learned unknown embedding handles missing data.
     1. Benefit: Cleanly separates "what is perturbing" (sequence) from "what is being perturbed" (target), enabling alignment training between sequences and targets while gracefully handling variable data availability across perturbation types.
 2. **Multi-Perturbation Support via Cross-Attention:** The model handles up to 4 simultaneous perturbations per sample. Each perturbation produces an action token, and the ACPredictor cross-attends to all action tokens when predicting the perturbed cell state.
     1. Benefit: Enables modeling of combinatorial perturbations (dual CRISPRi, drug combinations) and learning non-linear interaction effects between perturbations.
@@ -147,10 +67,10 @@ v0.6: 1,085 test perturbations, 10K genes, 5 datasets (309,760 samples). v0.5: 2
     1. Benefit: Multiplicative gating improves gradient flow and model expressivity. The gating mechanism has biological relevance as gene regulation inherently involves activation/inhibition gating.
 7. **Output Gating for Linear Attention:** Added a learnable sigmoid gate to the linear attention output in BioLinearAttention. The gate is computed from the query input (`sigmoid(gate(x))`) and multiplies the attention output before the final projection. Critically, gating is applied only to self-attention (`kv is None`), not cross-attention, to preserve the perturbation response pathway in the ACPredictor.
     1. Benefit: Provides per-gene control over attention contribution, allowing the model to learn which genes should dominate attention patterns. Proven effective for linear attention architectures (Gated DeltaNet, Qwen3-Next, Kimi K2).
-8. **Latent Masking for Action Predictor:** Added masking on our action predictor so that a portion of (`n=0.15`) of the input vector is masked during training of the ACPredictor.
+8. **Latent Dropout in Action Fusion:** Added dropout (`p=0.15`) in the ActionComposer's fusion step, masking a portion of the fused sequence and target latents before mode conditioning.
     1. Benefit: Pushes the model to better learn the relationship between perturbations and cell states, improving prediction accuracy over implicit positional learning.
-9. **Beta-NLL Loss (beta=0.5):** Replaced standard Gaussian NLL with a beta-weighted variant that scales each sample's loss by `variance.detach().sqrt()`. The detached variance breaks the gradient coupling that allows the model to reduce loss by inflating its uncertainty estimate rather than improving its predictions.
-    1. Benefit: Fixes a known pathology in heteroscedastic regression where the model learns to predict high variance everywhere to trivially minimize NLL. With beta=0.5, the model must actually improve its mean predictions to reduce loss.
+9. **Beta-NLL Loss (beta=0.2, annealed):** Replaced standard Gaussian NLL with a beta-weighted variant that scales each sample's loss by `variance.detach().pow(beta)`. The detached variance breaks the gradient coupling that allows the model to reduce loss by inflating its uncertainty estimate rather than improving its predictions. Beta is annealed from 0 to 0.2 over the first 30% of AC training steps.
+    1. Benefit: Fixes a known pathology in heteroscedastic regression where the model learns to predict high variance everywhere to trivially minimize NLL. With beta > 0, the model must actually improve its mean predictions to reduce loss. Annealing lets the model first learn good uncertainty estimates before the beta weighting kicks in.
 10. **Mask Annealing:** Optionally reduces the gene mask ratio during the final fraction of full training epochs, linearly interpolating from the base mask ratio down to a floor of 0.1. Controlled by `mask_anneal_pct` (default 0.0 = disabled).
     1. Benefit: Bridges the train-test mismatch where training uses partial gene masking but inference sees all genes. Gradually exposing the model to less masking in late training improves generalization to the unmasked inference setting.
 
