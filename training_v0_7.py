@@ -9,13 +9,13 @@ from torch.utils.tensorboard import SummaryWriter
 
 from torch.optim.lr_scheduler import LambdaLR
 
-from biojepa_v0_7 import BioJepa, BioJepaConfig
+from biojepa_v0_7 import BioJepa
 from evals.evals import EvalContext, run_encoder_evals, summarize_encoder_evals
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
-from config_v0_7 import EncoderTrainingConfig, ComposerTrainingConfig, ACTrainingConfig, DecoderConfig, DataConfig, MAX_SEQ_DIM, VERSION
+from config_v0_7 import MAX_SEQ_DIM, VERSION
 
 
-def create_model(model_cfg: BioJepaConfig, device) -> BioJepa:
+def create_model(model_cfg, device):
     model = BioJepa(model_cfg).to(device)
     return model
 
@@ -33,7 +33,7 @@ def maybe_compile(model, compile_model=False):
     return model
 
 
-def load_feature_banks(data_cfg: DataConfig, device):
+def load_feature_banks(data_cfg, device):
     seq_banks_dir = Path(data_cfg.data_root) / 'pert_embd' / 'seq_banks'
     target_banks_dir = Path(data_cfg.data_root) / 'pert_embd' / 'target_banks'
 
@@ -124,7 +124,7 @@ def _wsd_lambda(step, warmup_steps, phase2_start_step, max_steps):
     return max(0.0, 1.0 - (step - phase2_start_step) / max(1, decay_steps))
 
 
-def run_encoder_training(model, train_loader, val_loader, cfg: EncoderTrainingConfig, device, data_cfg: DataConfig, model_cfg: BioJepaConfig, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None, log_dir='default') -> dict:
+def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg, model_cfg, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None, log_dir='default'):
     checkpoint_dir = Path(data_cfg.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -283,7 +283,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg: EncoderTrainingCo
     return {'loss_history': loss_history, 'epoch_evals': epoch_evals, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def run_composer_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: ComposerTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default') -> dict:
+def run_composer_training(model, train_loader, val_loader, seq_banks, target_bank, cfg, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default'):
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -392,7 +392,7 @@ def get_beta_nll(step, target_beta, anneal_steps):
     return target_beta * min(1.0, step / max(1, anneal_steps))
 
 
-def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg: ACTrainingConfig, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default') -> dict:
+def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default'):
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -543,7 +543,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
     return {'loss_history': loss_history, 'final_loss': loss_history[-1] if loss_history else None}
 
 
-def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg: BioJepaConfig, device, checkpoint_dir, cfg: DecoderConfig, use_amp=False, use_fused_optimizer=False, log_dir='default') -> tuple[BenchmarkDecoder, dict]:
+def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg, device, checkpoint_dir, cfg, use_amp=False, use_fused_optimizer=False, log_dir='default'):
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
