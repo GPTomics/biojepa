@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: 'If you use BioJEPA, please cite:'
 title: 'BioJEPA-AC'
 authors:
-  - family-names: 'Domen'
-    given-names: 'Jemec'
+  - family-names: 'Jemec'
+    given-names: 'Domen'
 repository-code: 'https://github.com/GPTomics/biojepa'
 license: 'Apache-2.0'
 version: '0.6.0'
