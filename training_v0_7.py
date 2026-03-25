@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import json
 import gc
+import random
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 
@@ -13,6 +14,14 @@ from biojepa_v0_7 import BioJepa
 from evals.evals import EvalContext, run_encoder_evals, summarize_encoder_evals
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from config_v0_7 import MAX_SEQ_DIM, VERSION
+
+
+def reset_seed(seed=1337):
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
 
 
 def create_model(model_cfg, device):
@@ -125,6 +134,7 @@ def _wsd_lambda(step, warmup_steps, phase2_start_step, max_steps):
 
 
 def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg, model_cfg, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None, log_dir='default'):
+    reset_seed()
     checkpoint_dir = Path(data_cfg.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -284,6 +294,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
 
 
 def run_composer_training(model, train_loader, val_loader, seq_banks, target_bank, cfg, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default'):
+    reset_seed()
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -393,6 +404,7 @@ def get_beta_nll(step, target_beta, anneal_steps):
 
 
 def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default'):
+    reset_seed()
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -410,7 +422,6 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
         p.requires_grad = True
     for p in model.composer.parameters():
         p.requires_grad = True
-    model.null_action.requires_grad = True
     trainable_params = [p for p in model.parameters() if p.requires_grad]
 
     steps_per_epoch = train_loader.total_samples // cfg.batch_size
@@ -424,7 +435,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
 
     optimizer = torch.optim.AdamW([
         {'params': model.predictor.parameters(), 'lr': cfg.predictor_lr},
-        {'params': list(model.composer.parameters()) + [model.null_action], 'lr': cfg.predictor_lr * cfg.composer_lr_mult}
+        {'params': list(model.composer.parameters()), 'lr': cfg.predictor_lr * cfg.composer_lr_mult}
     ], weight_decay=cfg.weight_decay, fused=fused)
 
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -442,8 +453,6 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
     beta_anneal_pct = cfg.beta_nll_anneal_pct
     beta_anneal_steps = int(max_steps * beta_anneal_pct)
     print(f'Beta-NLL: target={target_beta:.2f}, anneal steps={beta_anneal_steps}')
-    if cfg.p_uncond > 0:
-        print(f'Conditioning dropout: p_uncond={cfg.p_uncond:.2f}')
 
     loss_history = []
     total_epoch_loss = 0
@@ -499,11 +508,11 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
             if writer:
                 loss, components = model(b.control, b.control_total, b.case, b.case_total,
                                          seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
-                                         mask_ratio=current_mask_ratio, beta_nll=current_beta, return_components=True, p_uncond=cfg.p_uncond, unknown_mask=unknown_mask, dose=b.dose)
+                                         mask_ratio=current_mask_ratio, beta_nll=current_beta, return_components=True, unknown_mask=unknown_mask, dose=b.dose)
             else:
                 loss = model(b.control, b.control_total, b.case, b.case_total,
                              seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
-                             mask_ratio=current_mask_ratio, beta_nll=current_beta, p_uncond=cfg.p_uncond, unknown_mask=unknown_mask, dose=b.dose)
+                             mask_ratio=current_mask_ratio, beta_nll=current_beta, unknown_mask=unknown_mask, dose=b.dose)
         loss.backward()
         grad_norm = nn.utils.clip_grad_norm_(trainable_params, 1.0)
         optimizer.step()
@@ -544,6 +553,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
 
 
 def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank, model_cfg, device, checkpoint_dir, cfg, use_amp=False, use_fused_optimizer=False, log_dir='default'):
+    reset_seed()
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 

@@ -38,9 +38,8 @@ class ACTrainingConfig:
     n_steps: int = None
     mask_anneal_pct: float = 0.0
     mask_anneal_floor: float = 0.0
-    p_uncond: float = 0.0
     beta_nll_target: float = 0.2
-    beta_nll_anneal_pct: float = 0.3
+    beta_nll_anneal_pct: float = 0.4
     composer_lr_mult: float = 0.1
 
 

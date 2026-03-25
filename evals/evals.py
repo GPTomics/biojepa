@@ -3007,8 +3007,8 @@ def _multi_pert_alignment(ctx):
             mask = torch.ones(1, 1, dtype=torch.bool, device=ctx.device)
             seq_action = ctx.biojepa.composer.encode_sequence_path(seq_emb, mod, mode, mask)
             target_action = ctx.biojepa.composer.encode_target_path(target_emb, mode, mask)
-            seq_pooled = ctx.biojepa.composer.attention_pool(seq_action, mask)
-            target_pooled = ctx.biojepa.composer.attention_pool(target_action, mask)
+            seq_pooled = seq_action.squeeze(1)
+            target_pooled = target_action.squeeze(1)
             sim = F.cosine_similarity(seq_pooled, target_pooled, dim=1).item()
             single_sims.append(sim)
 
@@ -3030,8 +3030,8 @@ def _multi_pert_alignment(ctx):
             mask = torch.ones(1, n, dtype=torch.bool, device=ctx.device)
             seq_action = ctx.biojepa.composer.encode_sequence_path(seq_emb, mod, mode_ids, mask)
             target_action = ctx.biojepa.composer.encode_target_path(target_emb, mode_ids, mask)
-            seq_pooled = ctx.biojepa.composer.attention_pool(seq_action, mask)
-            target_pooled = ctx.biojepa.composer.attention_pool(target_action, mask)
+            seq_pooled = seq_action.mean(dim=1)
+            target_pooled = target_action.mean(dim=1)
             sim = F.cosine_similarity(seq_pooled, target_pooled, dim=1).item()
             multi_sims.append(sim)
 

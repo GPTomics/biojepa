@@ -211,9 +211,9 @@ class ActionComposer(nn.Module):
         nn.init.normal_(self.film_shift.weight, std=0.02) #add some noise
         nn.init.zeros_(self.film_shift.bias)
 
-        # Attention pooling for alignment (query is learned)
-        self.pool_query = nn.Parameter(torch.randn(1, 1, D) * 0.02)
-        self.pool_attn = nn.MultiheadAttention(D, num_heads=config.heads, batch_first=True)
+        # pool_query and pool_attn removed: single-pert composer training
+        # means attention pooling was just a learned linear transform.
+        # Replaced by squeeze(1) in forward_composer.
 
         self.dose_proj = nn.Sequential(nn.Linear(1, D), nn.SiLU(), nn.Linear(D, D))
         nn.init.zeros_(self.dose_proj[2].weight)
@@ -355,16 +355,6 @@ class ActionComposer(nn.Module):
             action_latents[:, p] = action * p_mask.float().unsqueeze(-1)
 
         return action_latents
-
-    def attention_pool(self, action_latents, pert_mask):
-        '''Pool multi-pert action latents to single vector using attention'''
-        B, N_pert, D = action_latents.shape
-
-        query = self.pool_query.expand(B, -1, -1)
-        key_padding_mask = ~pert_mask
-
-        pooled, _ = self.pool_attn(query, action_latents, action_latents, key_padding_mask=key_padding_mask)
-        return pooled.squeeze(1)
 
 
 @dataclass
@@ -572,8 +562,6 @@ class BioJepa(nn.Module):
         )
         self.predictor = ACPredictor(pred_conf)
 
-        self.null_action = nn.Parameter(torch.zeros(1, 1, config.pert_latent_dim))
-
         ## Pretraining
         mask_pred_conf = copy.deepcopy(enc_conf)
         mask_pred_conf.n_layer = config.n_pre_layer
@@ -673,8 +661,8 @@ class BioJepa(nn.Module):
         z_seq = self.composer.encode_sequence_path(seq_emb, modality_ids, mode_ids, pert_mask)
         z_target = self.composer.encode_target_path(target_emb, mode_ids, pert_mask)
 
-        z_seq = self.composer.attention_pool(z_seq, pert_mask)
-        z_target = self.composer.attention_pool(z_target, pert_mask)
+        z_seq = z_seq.squeeze(1)
+        z_target = z_target.squeeze(1)
 
         z_seq = F.normalize(z_seq, dim=1)
         z_target = F.normalize(z_target, dim=1)
@@ -685,7 +673,7 @@ class BioJepa(nn.Module):
 
     def forward(self, x_control, total_control, x_case, total_case,
                 seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask,
-                mask_ratio=None, beta_nll=0.0, return_components=False, p_uncond=0.0, unknown_mask=None, dose=None):
+                mask_ratio=None, beta_nll=0.0, return_components=False, unknown_mask=None, dose=None):
         '''AC training forward with multi-perturbation support.'''
         B, N = x_control.shape
 
@@ -701,9 +689,6 @@ class BioJepa(nn.Module):
             context_latents = self.student(x_input_student, total_control, mask_idx=mask_idx, unknown_mask=unknown_mask)
 
         action_latents = self.composer(seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask, dose=dose)
-
-        if self.training and p_uncond > 0 and torch.rand(1).item() < p_uncond:
-            action_latents = self.null_action.expand(B, action_latents.shape[1], -1)
 
         target_indices = torch.arange(N, device=x_control.device).expand(B, N)
         pred_mu, pred_logvar = self.predictor(context_latents, action_latents, target_indices)
