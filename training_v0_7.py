@@ -328,11 +328,11 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
     for step in range(max_steps):
         last_step = (step == max_steps - 1)
 
-        if step % 500 == 0 or last_step:
+        if step % 10000 == 0 or last_step:
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 25
+                val_loss_steps = 50
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
                     B = b.seq_idx.shape[0]
@@ -374,7 +374,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
             writer.add_scalar('loss/train', loss.item(), step)
             writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
 
-        if step % 100 == 0:
+        if step % 2500 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
 
         if last_step:
