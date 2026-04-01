@@ -615,13 +615,14 @@ class BioJepa(nn.Module):
 
     def forward_encoder(self, x_values, total_counts, gene_mask=None, context_coeff=0.0, return_components=False):
         B, N = x_values.shape
+        D = self.config.embed_dim
 
         rand = torch.rand(B, N, device=x_values.device)
         mask_idx = rand < self.config.mask_ratio
 
         unknown_mask = ~gene_mask if gene_mask is not None else None
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             target_latents = self.teacher(x_values, total_counts, unknown_mask=unknown_mask)
 
         x_values_student = x_values.clone()
@@ -637,10 +638,15 @@ class BioJepa(nn.Module):
             is_masked = mask_idx
             is_context = ~mask_idx
 
-        rec_loss = F.l1_loss(predicted_latents[is_masked], target_latents[is_masked])
+        # Masked L1 loss (avoids boolean indexing which triggers nonzero/index CPU sync)
+        diff = (predicted_latents - target_latents).abs()
+        mask_weight = is_masked.unsqueeze(-1).float()
+        rec_loss = (diff * mask_weight).sum() / (mask_weight.sum() * D + 1e-8)
 
-        if context_coeff > 0 and is_context.any():
-            context_loss = F.mse_loss(predicted_latents[is_context], target_latents[is_context])
+        if context_coeff > 0:
+            sq_diff = (predicted_latents - target_latents).pow(2)
+            ctx_weight = is_context.unsqueeze(-1).float()
+            context_loss = (sq_diff * ctx_weight).sum() / (ctx_weight.sum() * D + 1e-8)
         else:
             context_loss = torch.tensor(0.0, device=x_values.device)
 
@@ -681,7 +687,7 @@ class BioJepa(nn.Module):
         rand = torch.rand(B, N, device=x_control.device)
         mask_idx = rand < effective_mask_ratio
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             target_latents = self.teacher(x_case, total_case, unknown_mask=unknown_mask)
 
             x_input_student = x_control.clone()

@@ -29,14 +29,14 @@ def create_model(model_cfg, device):
     return model
 
 
-def maybe_compile(model, compile_model=False):
+def maybe_compile(model, compile_model=False, mode='max-autotune-no-cudagraphs'):
     if not (compile_model and torch.cuda.is_available() and hasattr(torch, 'compile')):
         return model
     try:
-        model.student = torch.compile(model.student)
-        model.teacher = torch.compile(model.teacher)
-        model.predictor = torch.compile(model.predictor)
-        model.masked_predictor = torch.compile(model.masked_predictor)
+        model.student = torch.compile(model.student, mode=mode)
+        model.teacher = torch.compile(model.teacher, mode=mode)
+        model.predictor = torch.compile(model.predictor, mode=mode)
+        model.masked_predictor = torch.compile(model.masked_predictor, mode=mode)
     except Exception as e:
         print(f'torch.compile failed: {e}, using eager mode')
     return model
@@ -214,7 +214,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
             else:
                 loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 1.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 5.0)
         optimizer.step()
 
         if cfg.ema_final_momentum is not None and step >= phase2_start_step:
@@ -514,7 +514,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
                              seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
                              mask_ratio=current_mask_ratio, beta_nll=current_beta, unknown_mask=unknown_mask, dose=b.dose)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 1.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 5.0)
         optimizer.step()
         scheduler.step()
 
