@@ -15,7 +15,6 @@ class EncoderTrainingConfig:
     phase2_start_pct: float = 0.8
     context_coeff: float = 0.0
     context_ramp_pct: float = 0.2
-    context_ramp_start_pct: float = None
     ema_final_momentum: float = None
 
 

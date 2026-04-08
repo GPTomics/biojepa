@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from torch.optim.lr_scheduler import LambdaLR
 
-from biojepa_v0_7 import BioJepa, BioJepaConfig
+from biojepa_v0_7 import BioJepa
 from evals.evals import EvalContext, run_encoder_evals, summarize_encoder_evals
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from config_v0_7 import MAX_SEQ_DIM, VERSION
@@ -133,8 +133,8 @@ def _wsd_lambda(step, warmup_steps, phase2_start_step, max_steps):
     return max(0.0, 1.0 - (step - phase2_start_step) / max(1, decay_steps))
 
 
-def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg, model_cfg, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None, log_dir='default', start_step=0, checkpoint_path=None):
-    reset_seed(1337 + start_step)
+def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg, model_cfg, use_amp=False, use_fused_optimizer=False, eval_every_n_epochs=None, log_dir='default'):
+    reset_seed()
     checkpoint_dir = Path(data_cfg.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -153,52 +153,18 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
     else:
         raise ValueError('Either epochs or n_steps must be specified')
     print(f'Encoder training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
-
-    if checkpoint_path is not None:
-        with torch.serialization.safe_globals([BioJepaConfig]):
-            ckpt = torch.load(checkpoint_path, map_location=device)
-        state_dict = ckpt['model']
-        model_keys = set(model.state_dict().keys())
-        if set(state_dict.keys()) != model_keys:
-            stripped = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
-            if set(stripped.keys()) == model_keys:
-                state_dict = stripped
-            else:
-                compiled_prefixes = ['student', 'teacher', 'predictor', 'masked_predictor']
-                added = {}
-                for k, v in state_dict.items():
-                    prefix = k.split('.')[0]
-                    if prefix in compiled_prefixes:
-                        added[k.replace(f'{prefix}.', f'{prefix}._orig_mod.', 1)] = v
-                    else:
-                        added[k] = v
-                if set(added.keys()) == model_keys:
-                    state_dict = added
-        model.load_state_dict(state_dict)
-        print(f'Resuming from step {start_step} (epoch {start_step // steps_per_epoch})')
-
     model.enable_encoder_gradients()
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay, fused=fused)
 
-    if checkpoint_path is not None:
-        optimizer.load_state_dict(ckpt['optimizer'])
-        del ckpt
-
     phase2_start_step = int(max_steps * cfg.phase2_start_pct)
     warmup_steps = int(max_steps * cfg.warmup_pct)
-    scheduler = LambdaLR(optimizer, lambda step: _wsd_lambda(step, warmup_steps, phase2_start_step, max_steps),
-                         last_epoch=start_step - 1 if start_step > 0 else -1)
+    scheduler = LambdaLR(optimizer, lambda step: _wsd_lambda(step, warmup_steps, phase2_start_step, max_steps))
     print(f'WSD schedule: warmup={warmup_steps} steps, phase2 starts at step {phase2_start_step}')
 
-    if cfg.context_ramp_start_pct is not None:
-        context_ramp_start = int(max_steps * cfg.context_ramp_start_pct)
-        context_ramp_end = context_ramp_start + int(max_steps * cfg.context_ramp_pct)
-    else:
-        context_ramp_start = int(max_steps * (1.0 - cfg.context_ramp_pct))
-        context_ramp_end = max_steps - 1
+    context_ramp_start = int(max_steps * (1.0 - cfg.context_ramp_pct))
     if cfg.context_coeff > 0:
-        print(f'Context L2: target={cfg.context_coeff}, ramp steps {context_ramp_start} -> {context_ramp_end}')
+        print(f'Context L2: target={cfg.context_coeff}, ramp starts at step {context_ramp_start}')
     if cfg.ema_final_momentum is not None:
         print(f'EMA annealing: {model_cfg.ema_momentum} -> {cfg.ema_final_momentum} during phase 2')
 
@@ -207,11 +173,11 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
     total_epoch_loss = 0
     model.train()
 
-    for step in range(start_step, max_steps):
+    for step in range(max_steps):
         last_step = (step == max_steps - 1)
 
         if cfg.context_coeff > 0 and step >= context_ramp_start:
-            progress = min(1.0, (step - context_ramp_start) / max(1, context_ramp_end - context_ramp_start))
+            progress = (step - context_ramp_start) / max(1, max_steps - 1 - context_ramp_start)
             current_context_coeff = cfg.context_coeff * progress
         else:
             current_context_coeff = 0.0
