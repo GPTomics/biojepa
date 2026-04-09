@@ -270,7 +270,7 @@ class EvalContext:
     @property
     def gene_embeddings(self):
         if self._gene_embeddings is None:
-            self._gene_embeddings = self.biojepa.student.gene_embeddings.detach().cpu().numpy()
+            self._gene_embeddings = self.biojepa.teacher.gene_embeddings.detach().cpu().numpy()
         return self._gene_embeddings
 
     @property
@@ -579,7 +579,7 @@ class EvalContext:
             unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
 
             with torch.no_grad():
-                z_context = self.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask)
+                z_context = self.biojepa.teacher(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask)
                 action_latents = self.biojepa.composer(
                     seq_emb, target_emb, batch.modality, batch.mode,
                     batch.has_seq, batch.has_target, pert_mask, dose=batch.dose
@@ -866,7 +866,7 @@ def _batch_invariance(ctx):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
-            all_emb.append(ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy())
+            all_emb.append(ctx.biojepa.teacher(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy())
             all_batch.append(batch.batch_id.cpu().numpy())
             all_pert.append(batch.seq_idx[:, 0].cpu().numpy())
             all_ds_ids.append(batch.dataset_id.cpu().numpy())
@@ -1041,7 +1041,7 @@ def _cell_type_probing(ctx):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
+            emb = ctx.biojepa.teacher(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(emb)
             all_cell_type.append(batch.cell_type.cpu().numpy())
             all_batch_id.append(batch.batch_id.cpu().numpy())
@@ -1103,7 +1103,7 @@ def _reconstruction(ctx):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).cpu().numpy()
+            emb = ctx.biojepa.teacher(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).cpu().numpy()
             all_emb.append(emb)
             all_expr.append(cont_x.cpu().numpy())
             if hasattr(batch, 'gene_mask') and batch.gene_mask is not None:
@@ -1199,8 +1199,8 @@ def _perturbation_detection(ctx):
             cont_x, cont_tot = batch.control, batch.control_total
             case_x, case_tot = batch.case, batch.case_total
             unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
-            ctrl_z = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
-            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
+            ctrl_z = ctx.biojepa.teacher(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
+            case_z = ctx.biojepa.teacher(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             control_emb.append(ctrl_z)
             case_emb.append(case_z)
             all_ds_ids.append(batch.dataset_id.cpu().numpy())
@@ -1271,7 +1271,7 @@ def _embedding_consistency(ctx):
             batch = test_loader.next_batch()
             case_x, case_tot = batch.case, batch.case_total
             unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
-            case_z = ctx.biojepa.student(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
+            case_z = ctx.biojepa.teacher(case_x, case_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(case_z)
             all_seq.append(batch.seq_idx[:, 0].cpu().numpy())
             all_target.append(batch.target_idx[:, 0].cpu().numpy())
@@ -1322,7 +1322,7 @@ def _latent_space_health(ctx):
             batch = test_loader.next_batch()
             cont_x, cont_tot = batch.control, batch.control_total
             unknown_mask = ~batch.gene_mask if hasattr(batch, 'gene_mask') and batch.gene_mask is not None else None
-            emb = ctx.biojepa.student(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
+            emb = ctx.biojepa.teacher(cont_x, cont_tot, mask_idx=None, unknown_mask=unknown_mask).mean(dim=1).cpu().numpy()
             all_emb.append(emb)
 
     embeddings = np.concatenate(all_emb, axis=0)
@@ -1705,7 +1705,7 @@ def _perturbation_retrieval(ctx, n_eval=200):
                 control_batch = control_x.unsqueeze(0).expand(B, -1)
                 control_tot_batch = control_tot.unsqueeze(0).expand(B)
                 unk = unknown_mask.unsqueeze(0).expand(B, -1) if unknown_mask is not None else None
-                z_ctx = ctx.biojepa.student(control_batch, control_tot_batch, mask_idx=None, unknown_mask=unk)
+                z_ctx = ctx.biojepa.teacher(control_batch, control_tot_batch, mask_idx=None, unknown_mask=unk)
                 if use_seq:
                     seq_emb = bank[batch_idx].unsqueeze(1)
                     target_emb = torch.zeros(B, 1, 320, device=ctx.device)

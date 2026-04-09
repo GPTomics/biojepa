@@ -640,7 +640,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
                     unknown_mask = ~b.gene_mask
 
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        z_context = model.student(b.control, b.control_total, mask_idx=None, unknown_mask=unknown_mask)
+                        z_context = model.teacher(b.control, b.control_total, mask_idx=None, unknown_mask=unknown_mask)
                         action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask, dose=b.dose)
                         target_indices = torch.arange(N, device=device).expand(B, N)
                         z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)
@@ -663,7 +663,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
         unknown_mask = ~b.gene_mask
 
         with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-            z_context = model.student(b.control, b.control_total, mask_idx=None, unknown_mask=unknown_mask)
+            z_context = model.teacher(b.control, b.control_total, mask_idx=None, unknown_mask=unknown_mask)
             action_latents = model.composer(seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask, dose=b.dose)
             target_indices = torch.arange(N, device=device).expand(B, N)
             z_pred_mu, _ = model.predictor(z_context, action_latents, target_indices)

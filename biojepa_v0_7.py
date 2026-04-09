@@ -690,9 +690,9 @@ class BioJepa(nn.Module):
         with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             target_latents = self.teacher(x_case, total_case, unknown_mask=unknown_mask)
 
-            x_input_student = x_control.clone()
-            x_input_student[mask_idx] = 0.0
-            context_latents = self.student(x_input_student, total_control, mask_idx=mask_idx, unknown_mask=unknown_mask)
+            x_input_context = x_control.clone()
+            x_input_context[mask_idx] = 0.0
+            context_latents = self.teacher(x_input_context, total_control, mask_idx=mask_idx, unknown_mask=unknown_mask)
 
         action_latents = self.composer(seq_emb, target_emb, modality_ids, mode_ids, has_seq, has_target, pert_mask, dose=dose)
 

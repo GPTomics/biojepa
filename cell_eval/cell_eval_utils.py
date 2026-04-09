@@ -230,7 +230,7 @@ def build_cell_eval_adata(dataset_name, biojepa, decoder, seq_banks, target_bank
 
     biojepa.eval()
     with torch.no_grad():
-        z_context_ntc = biojepa.student(ntc_expr_t, ntc_total_t, mask_idx=None, unknown_mask=unknown_mask_t)
+        z_context_ntc = biojepa.teacher(ntc_expr_t, ntc_total_t, mask_idx=None, unknown_mask=unknown_mask_t)
 
     for key, meta in tqdm(pert_meta.items(), desc=f'{dataset_name} perts', disable=not verbose):
         np_val = meta['n_perts']
