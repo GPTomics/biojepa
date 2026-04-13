@@ -744,6 +744,126 @@ def save_report(results, output_path='eval_report.json'):
     print(f'Saved report to {report_path}')
 
 
+def _permutation_invariance(ctx):
+    '''Is the teacher encoder invariant to gene ordering?'''
+    verbose = ctx.config['verbose']
+    n_permutations = ctx.config.get('n_permutations', 10)
+    max_samples = ctx.config.get('perm_inv_max_samples', 64)
+    batch_size = ctx.config['batch_size']
+    num_genes = ctx.config['num_genes']
+    eval_seed = ctx.config.get('seed', 1337)
+    split = ctx.config.get('eval_split', 'test')
+
+    shard_dir = ctx.paths['data_dir'] / 'encoder_t' / split
+    if not shard_dir.exists():
+        return {'skipped': True, 'reason': f'encoder data not found at {shard_dir}'}
+
+    all_shards = sorted(shard_dir.glob('*.npz'))
+    shards_by_dataset = defaultdict(list)
+    for shard in all_shards:
+        parts = shard.stem.split('_')
+        if split not in parts:
+            continue
+        split_idx = parts.index(split)
+        if split_idx >= 2:
+            shards_by_dataset['_'.join(parts[1:split_idx])].append(shard)
+
+    if not shards_by_dataset:
+        return {'skipped': True, 'reason': 'no dataset shards found'}
+
+    rng_py = random.getstate()
+    rng_np = np.random.get_state()
+    rng_torch = torch.random.get_rng_state()
+    rng_cuda = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+
+    random.seed(eval_seed)
+    np.random.seed(eval_seed)
+    torch.manual_seed(eval_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(eval_seed)
+
+    teacher = ctx.biojepa.teacher
+    by_dataset = {}
+    all_cos_sims = []
+
+    with torch.no_grad():
+        for ds_name, ds_shards in sorted(shards_by_dataset.items()):
+            with np.load(ds_shards[0]) as data:
+                x_np = data['x'].astype(np.float32)
+                total_np = data['total'].astype(np.float32)
+                gene_mask = data['gene_mask'].astype(np.bool_) if 'gene_mask' in data else np.ones(num_genes, dtype=np.bool_)
+
+            n_use = min(len(x_np), max_samples)
+            x = torch.from_numpy(x_np[:n_use]).to(ctx.device)
+            total = torch.from_numpy(total_np[:n_use]).to(ctx.device)
+            known_mask = torch.from_numpy(gene_mask).to(ctx.device)
+            unknown_2d = (~known_mask).unsqueeze(0).expand(n_use, -1)
+
+            canonical_parts = []
+            for start in range(0, n_use, batch_size):
+                end = min(start + batch_size, n_use)
+                z = teacher(x[start:end], total[start:end], mask_idx=None, unknown_mask=unknown_2d[start:end])
+                canonical_parts.append(z.cpu())
+            canonical = torch.cat(canonical_parts, dim=0)
+
+            original_ge = teacher.gene_embeddings.data.clone()
+            dataset_cos_sims = []
+
+            for _ in range(n_permutations):
+                perm = torch.randperm(num_genes, device=ctx.device)
+                inv_perm = torch.argsort(perm)
+
+                teacher.gene_embeddings.data = original_ge[perm]
+                x_perm = x[:, perm]
+                um_perm = unknown_2d[:, perm]
+
+                perm_parts = []
+                for start in range(0, n_use, batch_size):
+                    end = min(start + batch_size, n_use)
+                    z = teacher(x_perm[start:end], total[start:end], mask_idx=None, unknown_mask=um_perm[start:end])
+                    perm_parts.append(z.cpu())
+                perm_out = torch.cat(perm_parts, dim=0)
+
+                teacher.gene_embeddings.data = original_ge
+
+                z_unperm = perm_out[:, inv_perm.cpu()]
+                cos = F.cosine_similarity(canonical[:, known_mask.cpu()], z_unperm[:, known_mask.cpu()], dim=-1)
+                dataset_cos_sims.append(cos.numpy().flatten())
+
+            teacher.gene_embeddings.data = original_ge
+
+            flat = np.concatenate(dataset_cos_sims)
+            by_dataset[ds_name] = {
+                'mean_cosine_sim': float(np.mean(flat)),
+                'std_cosine_sim': float(np.std(flat)),
+                'min_cosine_sim': float(np.min(flat)),
+                'n_known_genes': int(known_mask.sum().item()),
+                'n_samples': n_use
+            }
+            all_cos_sims.append(flat)
+
+            if verbose:
+                print(f'permutation_invariance [{ds_name}]: mean={np.mean(flat):.6f}, min={np.min(flat):.6f}')
+
+    random.setstate(rng_py)
+    np.random.set_state(rng_np)
+    torch.random.set_rng_state(rng_torch)
+    if rng_cuda is not None:
+        torch.cuda.set_rng_state(rng_cuda)
+
+    all_flat = np.concatenate(all_cos_sims)
+    result = {
+        'config': {'n_permutations': n_permutations, 'max_samples_per_dataset': max_samples, 'n_datasets': len(by_dataset)},
+        'overall': {'mean_cosine_sim': float(np.mean(all_flat)), 'std_cosine_sim': float(np.std(all_flat)), 'min_cosine_sim': float(np.min(all_flat))},
+        'by_dataset': by_dataset
+    }
+
+    if verbose:
+        print(f'permutation_invariance overall: mean={np.mean(all_flat):.6f}, min={np.min(all_flat):.6f}')
+
+    return result
+
+
 def summarize_encoder_evals(eval_results):
     '''Extract compact metrics dict from verbose eval results.'''
     summary = {}
@@ -765,6 +885,8 @@ def summarize_encoder_evals(eval_results):
         summary['essential_auroc'] = eval_results['essential_gene_prediction'].get('classification', {}).get('auroc_test')
     if 'embedding_consistency' in eval_results:
         summary['consistency_ratio'] = eval_results['embedding_consistency'].get('metrics', {}).get('inter_intra_ratio')
+    if 'permutation_invariance' in eval_results:
+        summary['perm_invariance_cos'] = eval_results['permutation_invariance'].get('overall', {}).get('mean_cosine_sim')
     return {k: round(v, 4) if isinstance(v, float) else v for k, v in summary.items() if v is not None}
 
 
@@ -783,6 +905,7 @@ def run_encoder_evals(ctx):
         'perturbation_detection': _perturbation_detection(ctx),
         'embedding_consistency': _embedding_consistency(ctx),
         'latent_space_health': _latent_space_health(ctx),
+        'permutation_invariance': _permutation_invariance(ctx),
     }
 
 

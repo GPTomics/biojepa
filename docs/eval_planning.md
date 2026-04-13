@@ -46,6 +46,7 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 - `batch_invariance`: Are representations confounded by batch effects?
 - `gene_embedding_pathways`: Do genes in same pathway cluster together?
 - `essential_gene_prediction`: Do gene embeddings encode functional importance?
+- `permutation_invariance`: Is the encoder invariant to gene ordering?
 
 **Alignment Evals** (run after stage 2 - alignment):
 - `seq_to_target_retrieval`: Per-modality retrieval - DNA/chemical -> protein target (MRR, Recall@K)
@@ -269,6 +270,35 @@ For SOTA benchmarks and comparability analysis, see `docs/sota_evals.md`.
 - The ratio tells you how much more "biological" than "technical" your representations are
 - Example: 48 batches (chance=2.1%), 286 perts (chance=0.35%). Batch acc=2.9%, Pert acc=0.8% -> Batch is 1.4x chance, Pert is 2.2x chance
 - Note: Low perturbation accuracy isn't necessarily bad if embeddings capture perturbation effects rather than identity
+
+---
+
+### permutation_invariance
+
+**Biological question**: Is the encoder truly invariant to gene ordering, relying on gene embeddings for identity rather than array position?
+
+**Method**: For each dataset, loads 1 test shard from `encoder_t/`. Runs the teacher unmasked to get canonical output, then runs 10 random gene-order permutations (permuting both expression columns and `gene_embeddings` rows), unpermutes the output, and compares to canonical via per-gene cosine similarity. Unknown genes excluded from comparison (they receive a constant `unknown_token`).
+
+**Metrics**:
+
+| Metric | Description |
+|--------|-------------|
+| Mean Cosine Sim | Average cosine similarity across all genes, samples, and permutations |
+| Std Cosine Sim | Standard deviation of per-gene cosine similarities |
+| Min Cosine Sim | Worst-case cosine similarity (most sensitive gene position) |
+
+**How to interpret**:
+
+| Metric | Good | Concerning |
+|--------|------|------------|
+| Mean Cosine Sim | > 0.999 | < 0.99 |
+| Min Cosine Sim | > 0.99 | < 0.95 |
+
+**Interpretation guide**:
+- Perfect invariance would give cosine sim = 1.0. Deviations come from floating-point non-associativity in the linear attention reductions.
+- Per-dataset breakdown reveals whether specific gene masks (varying numbers of unknown genes) affect invariance.
+- If values are unexpectedly low, indicates a positional dependency bug or numerical instability.
+- Paired with future training item #28 (gene-order shuffling augmentation) which would enforce this property during training.
 
 ---
 
@@ -1037,6 +1067,7 @@ The following evals would enable direct comparison to published SOTA numbers. So
 | perturbation_retrieval | Full | perturbation_retrieval.ipynb | Find perturbation from outcome | Recall@K, MRR |
 | uncertainty_calibration | Full | uncertainty_calibration.ipynb | Are confidence estimates meaningful? | ECE, Monotonicity |
 | batch_invariance | Pretrain | batch_invariance.ipynb | Batch vs biological signal | Invariance ratio |
+| permutation_invariance | Pretrain | N/A | Gene-order invariance | Mean/min cosine sim |
 | gene_embedding_pathways | Pretrain | gene_embedding_pathways.ipynb | Pathway structure in gene embeddings | Similarity ratio, gap, p-value |
 | action_vector_pathways | Alignment | action_vector_pathways.ipynb | Pathway structure in action vectors | Similarity ratio, gap, p-value |
 | moa_matching | Full | moa_matching.ipynb | Same-pathway similarity | Within/between ratio |
