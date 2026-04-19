@@ -632,7 +632,12 @@ class EvalContext:
 
                 gm_i = gene_mask_np[i] if gene_mask_np is not None else None
                 sample_mse = float(np.mean((pred_delta_np[i][gm_i] - real_delta_np[i][gm_i])**2)) if gm_i is not None else float(np.mean((pred_delta_np[i] - real_delta_np[i])**2))
-                top_20_idx = np.argsort(np.abs(real_delta_np[i]))[-20:]
+                if gm_i is not None:
+                    measured = np.where(gm_i)[0]
+                    k = min(20, len(measured))
+                    top_20_idx = measured[np.argsort(np.abs(real_delta_np[i][measured]))[-k:]] if k > 0 else measured
+                else:
+                    top_20_idx = np.argsort(np.abs(real_delta_np[i]))[-20:]
                 p_top, t_top = pred_delta_np[i][top_20_idx], real_delta_np[i][top_20_idx]
                 if np.std(p_top) > 1e-9 and np.std(t_top) > 1e-9:
                     corr, _ = pearsonr(p_top, t_top)
@@ -1915,9 +1920,10 @@ def _compute_uncertainty_calibration(inf, n_bins, sample_gene_masks=None):
     if sample_gene_masks is not None:
         sq_err = (pred_deltas - real_deltas)**2 * sample_gene_masks
         sample_mse = sq_err.sum(axis=1) / sample_gene_masks.sum(axis=1).clip(1)
+        sample_unc = (sample_logvars * sample_gene_masks).sum(axis=1) / sample_gene_masks.sum(axis=1).clip(1)
     else:
         sample_mse = np.mean((pred_deltas - real_deltas)**2, axis=1)
-    sample_unc = sample_logvars.mean(axis=1)
+        sample_unc = sample_logvars.mean(axis=1)
 
     r, _ = pearsonr(sample_unc, sample_mse)
     pearson_r = 0.0 if np.isnan(r) else float(r)
@@ -1979,7 +1985,7 @@ def _compute_uncertainty_calibration(inf, n_bins, sample_gene_masks=None):
         if len(indices) < 3:
             continue
         idx = np.array(indices)
-        gm = sample_gene_masks[idx[0]] if sample_gene_masks is not None else None
+        gm = sample_gene_masks[idx].all(axis=0) if sample_gene_masks is not None else None
         if gm is not None:
             observed_var = np.var(real_deltas[idx][:, gm], axis=0)
             predicted_var = np.mean(np.exp(sample_logvars[idx][:, gm]), axis=0)
