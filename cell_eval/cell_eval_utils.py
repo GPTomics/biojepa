@@ -227,6 +227,8 @@ def build_cell_eval_adata(dataset_name, biojepa, decoder, seq_banks, target_bank
 
     all_pred_expr = []
     all_pred_names = []
+    n_clamped_upper = 0
+    n_total_entries = 0
 
     biojepa.eval()
     with torch.no_grad():
@@ -266,7 +268,10 @@ def build_cell_eval_adata(dataset_name, biojepa, decoder, seq_banks, target_bank
                 tgt_idx = torch.arange(N, device=device).expand(b, N)
                 z_pred_mu, _ = biojepa.predictor(z_context_ntc[sl], action_lat, tgt_idx)
                 pred_delta = decoder(z_pred_mu) - decoder(z_context_ntc[sl])
-                pred_expr = torch.clamp(ntc_expr_t[sl] + pred_delta, min=0.0)
+                pred_expr_raw = ntc_expr_t[sl] + pred_delta
+                pred_expr = torch.clamp(pred_expr_raw, min=0.0, max=15.0)
+                n_clamped_upper += int((pred_expr_raw > 15.0).sum().item())
+                n_total_entries += pred_expr_raw.numel()
                 pred_np = pred_expr.cpu().numpy()
                 pred_np[:, ~gene_mask] = 0.0
                 pred_batch.append(pred_np)
@@ -312,4 +317,12 @@ def build_cell_eval_adata(dataset_name, biojepa, decoder, seq_banks, target_bank
     del pred_matrix, real_matrix
     gc.collect()
 
-    return adata_pred, adata_real
+    clamp_stats = {
+        'n_clamped_upper': int(n_clamped_upper),
+        'n_total_entries': int(n_total_entries),
+        'frac_clamped_upper': float(n_clamped_upper / n_total_entries) if n_total_entries > 0 else 0.0,
+    }
+    if verbose and n_clamped_upper > 0:
+        print(f'{dataset_name}: clamped {n_clamped_upper} / {n_total_entries} predictions ({clamp_stats["frac_clamped_upper"]*100:.4f}%) at max=15.0')
+
+    return adata_pred, adata_real, clamp_stats
