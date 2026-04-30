@@ -386,7 +386,7 @@ class CellStateEncoder(nn.Module):
         )
 
         self.mask_token = nn.Parameter(torch.randn(config.embed_dim) * 0.02)
-        self.unknown_token = nn.Parameter(torch.randn(config.embed_dim) * 0.02)
+        self.unknown_token = nn.Parameter(torch.zeros(config.embed_dim))
 
         # Total Count Injector
         self.total_count_proj = nn.Linear(1, config.embed_dim)
@@ -644,9 +644,8 @@ class BioJepa(nn.Module):
         rec_loss = (diff * mask_weight).sum() / (mask_weight.sum() * D + 1e-8)
 
         if context_coeff > 0:
-            sq_diff = (predicted_latents - target_latents).pow(2)
             ctx_weight = is_context.unsqueeze(-1).float()
-            context_loss = (sq_diff * ctx_weight).sum() / (ctx_weight.sum() * D + 1e-8)
+            context_loss = (diff * ctx_weight).sum() / (ctx_weight.sum() * D + 1e-8)
         else:
             context_loss = torch.tensor(0.0, device=x_values.device)
 
@@ -659,7 +658,7 @@ class BioJepa(nn.Module):
         total = self.config.sim_coeff * rec_loss + context_coeff * context_loss + reg_loss
 
         if return_components:
-            return total, {'l1_masked': rec_loss, 'context_l2': context_loss, **reg_components}
+            return total, {'l1_masked': rec_loss, 'l1_context': context_loss, **reg_components}
         return total
 
     def forward_composer(self, seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=0.012):

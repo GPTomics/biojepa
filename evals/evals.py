@@ -880,12 +880,14 @@ def summarize_encoder_evals(eval_results):
         summary['dead_dims'] = health.get('variance', {}).get('n_dead_dims')
     if 'reconstruction' in eval_results:
         summary['recon_pearson'] = eval_results['reconstruction'].get('metrics', {}).get('pearson_r')
+        summary['recon_r_squared'] = eval_results['reconstruction'].get('metrics', {}).get('pearson_r_squared')
     if 'batch_invariance' in eval_results:
         summary['invariance_ratio'] = eval_results['batch_invariance'].get('invariance_ratio')
     if 'gene_embedding_pathways' in eval_results:
         summary['kegg_similarity_ratio'] = eval_results['gene_embedding_pathways'].get('kegg', {}).get('similarity_ratio')
     if 'cell_type_probing' in eval_results:
         summary['cell_type_acc'] = eval_results['cell_type_probing'].get('metrics', {}).get('accuracy')
+        summary['cell_type_macro_f1'] = eval_results['cell_type_probing'].get('metrics', {}).get('macro_f1')
     if 'essential_gene_prediction' in eval_results:
         summary['essential_auroc'] = eval_results['essential_gene_prediction'].get('classification', {}).get('auroc_test')
     if 'embedding_consistency' in eval_results:
