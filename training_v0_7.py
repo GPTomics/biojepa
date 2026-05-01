@@ -220,7 +220,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 25
+                val_loss_steps = 250
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
                     with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
@@ -248,7 +248,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
             else:
                 loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 5.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 2.0)
         optimizer.step()
 
         if cfg.ema_final_momentum is not None and step >= phase2_start_step:
@@ -368,7 +368,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
                 model.eval()
                 with torch.no_grad():
                     val_loss_accum = 0.0
-                    val_loss_steps = 50
+                    val_loss_steps = 500
                     for _ in range(val_loss_steps):
                         b = val_loader.next_batch()
                         B = b.seq_idx.shape[0]
@@ -517,7 +517,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 25
+                val_loss_steps = 250
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
 
@@ -564,7 +564,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
                              seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
                              mask_ratio=current_mask_ratio, beta_nll=current_beta, unknown_mask=unknown_mask, dose=b.dose)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 5.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 2.0)
         optimizer.step()
         scheduler.step()
 
