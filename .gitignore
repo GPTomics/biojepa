@@ -61,3 +61,6 @@ bayes_opt.md
 bayes_opt_future.md
 MEMORY.md
 cell_eval/cell-eval-outdir/
+
+# HPO experimental work (kept local, not pushed to public repo)
+encoder_hpo/
