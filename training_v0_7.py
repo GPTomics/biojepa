@@ -248,7 +248,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
             else:
                 loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 2.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 5.0)
         optimizer.step()
 
         if cfg.ema_final_momentum is not None and step >= phase2_start_step:
@@ -328,6 +328,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
 
 
 def run_composer_training(model, train_loader, val_loader, seq_banks, target_bank, cfg, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default'):
+    reset_seed()
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -564,7 +565,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
                              seq_emb, target_emb, b.modality, b.mode, b.has_seq, b.has_target, pert_mask,
                              mask_ratio=current_mask_ratio, beta_nll=current_beta, unknown_mask=unknown_mask, dose=b.dose)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 2.0)
+        grad_norm = nn.utils.clip_grad_norm_(trainable_params, 5.0)
         optimizer.step()
         scheduler.step()
 
