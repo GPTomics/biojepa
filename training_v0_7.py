@@ -217,20 +217,21 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
             current_context_coeff = 0.0
 
         if step % 5000 == 0 or last_step:
-            model.eval()
-            with torch.no_grad():
-                val_loss_accum = 0.0
-                val_loss_steps = 250
-                for _ in range(val_loss_steps):
-                    b = val_loader.next_batch()
-                    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        val_loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
-                    val_loss_accum += val_loss.item()
-                avg_val_loss = val_loss_accum / val_loss_steps
-                print(f'Step {step} | val loss: {avg_val_loss:.4f}')
-                if writer:
-                    writer.add_scalar('loss/val', avg_val_loss, step)
-            model.train()
+            with torch.random.fork_rng():
+                model.eval()
+                with torch.no_grad():
+                    val_loss_accum = 0.0
+                    val_loss_steps = 250
+                    for _ in range(val_loss_steps):
+                        b = val_loader.next_batch()
+                        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+                            val_loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
+                        val_loss_accum += val_loss.item()
+                    avg_val_loss = val_loss_accum / val_loss_steps
+                    print(f'Step {step} | val loss: {avg_val_loss:.4f}')
+                    if writer:
+                        writer.add_scalar('loss/val', avg_val_loss, step)
+                model.train()
 
         if step > 0 and (step + 1) % steps_per_epoch == 0 and not last_step:
             epoch = (step + 1) // steps_per_epoch
