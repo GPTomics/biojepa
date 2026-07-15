@@ -441,12 +441,18 @@ class ACPredictorConfig:
     heads: int = 4
     embed_dim: int = 384
     mlp_ratio: float = 4.0
-    action_dim: int = 320 
+    action_dim: int = 320
+    context_dim: int = None   # incoming context latent dim; None -> embed_dim
+    output_dim: int = None    # prediction output dim to match target; None -> embed_dim
 
 class ACPredictor(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        context_dim = config.context_dim or config.embed_dim
+        output_dim = config.output_dim or config.embed_dim
+
+        self.in_proj = nn.Linear(context_dim, config.embed_dim) if context_dim != config.embed_dim else nn.Identity()
 
         self.adapter = nn.Sequential(
             nn.Linear(config.action_dim, config.embed_dim),
@@ -459,8 +465,8 @@ class ACPredictor(nn.Module):
         self.blocks = nn.ModuleList([PredictorBlock(config) for _ in range(config.n_layer)])
         self.final_norm = RMSNorm(config.embed_dim)
 
-        self.head_mu = nn.Linear(config.embed_dim, config.embed_dim)
-        self.head_logvar = nn.Linear(config.embed_dim, config.embed_dim)
+        self.head_mu = nn.Linear(config.embed_dim, output_dim)
+        self.head_logvar = nn.Linear(config.embed_dim, output_dim)
 
         self.apply(init_weights_robust)
 
@@ -471,6 +477,7 @@ class ACPredictor(nn.Module):
             action_latents: [B, N_pert, action_dim] - from ActionComposer (multi-pert)
             target_indices: [B, num_genes] - gene indices for queries
         '''
+        context_latents = self.in_proj(context_latents)
         B, C_Len, D = context_latents.shape
 
         # Adapt action latents (handles multi-pert: [B, N_pert, D])
@@ -518,6 +525,11 @@ class BioJepaConfig:
     pert_latent_dim: int = 320
     pert_mode_dim: int = 64
 
+    # Predictor (decoupled from encoder; None -> match encoder dims)
+    predictor_embed_dim: int = None
+    predictor_n_layer: int = None
+    predictor_heads: int = None
+
     # EMA
     ema_momentum: float = 0.995
 
@@ -554,11 +566,13 @@ class BioJepa(nn.Module):
         # Action Predictor
         pred_conf = ACPredictorConfig(
             num_genes=config.num_genes,
-            n_layer=config.n_layer,
-            heads=config.heads,
-            embed_dim=config.embed_dim,
+            n_layer=config.predictor_n_layer or config.n_layer,
+            heads=config.predictor_heads or config.heads,
+            embed_dim=config.predictor_embed_dim or config.embed_dim,
             mlp_ratio=config.mlp_ratio,
-            action_dim=config.pert_latent_dim 
+            action_dim=config.pert_latent_dim,
+            context_dim=config.embed_dim,
+            output_dim=config.embed_dim,
         )
         self.predictor = ACPredictor(pred_conf)
 
