@@ -162,6 +162,8 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
         run_end_step = cfg.stop_after_epochs * steps_per_epoch
 
     print(f'Encoder training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
+    if cfg.stop_after_epochs is not None:
+        print(f'Encoder run stops after {cfg.stop_after_epochs} epochs ({run_end_step} steps)')
 
     if checkpoint_path is not None:
         with torch.serialization.safe_globals([BioJepaConfig]):
