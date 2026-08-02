@@ -18,13 +18,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.spatial.distance import pdist
 
-import biojepa_v0_7 as model
-from dataloader_v0_7 import TrainingLoader, EvalLoader
+import biojepa_v1_0 as model
+from dataloader_v1_0 import TrainingLoader, EvalLoader
 from .linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
 from .pathway_utils import load_pathway_annotations, build_gene_to_pathways, compute_multilabel_pathway_similarity
 from .linear_classifier import train_linear_classifier
 import torch.nn.functional as F
-from config_v0_7 import MAX_SEQ_DIM, VERSION
+from config_v1_0 import MAX_SEQ_DIM, VERSION
 
 
 def get_seq_embeddings(seq_idx, modality, seq_banks, max_seq_dim=MAX_SEQ_DIM):
@@ -170,7 +170,15 @@ class EvalContext:
         missing_keys = [k for k in REQUIRED_CONFIG_KEYS if k not in config]
         if missing_keys:
             raise ValueError(f'Missing required config keys: {missing_keys}. Required: {REQUIRED_CONFIG_KEYS}')
-        self.config = {'pert_latent_dim': 320, 'pert_mode_dim': 64, 'verbose': True, **config}
+        self.config = {
+            'pert_latent_dim': 128,
+            'pert_mode_dim': 64,
+            'predictor_embed_dim': 128,
+            'predictor_n_layer': 4,
+            'predictor_heads': 4,
+            'verbose': True,
+            **config,
+        }
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.paths = self._get_paths(Path(data_root), Path(checkpoint_root), Path(ref_dir))
         if self.config['verbose']:
@@ -238,8 +246,11 @@ class EvalContext:
                 sim_coeff=self.config.get('sim_coeff', 25.0),
                 std_coeff=self.config.get('std_coeff', 25.0),
                 cov_coeff=self.config.get('cov_coeff', 1.0),
-                pert_latent_dim=self.config.get('pert_latent_dim', 320),
+                pert_latent_dim=self.config.get('pert_latent_dim', 128),
                 pert_mode_dim=self.config.get('pert_mode_dim', 64),
+                predictor_embed_dim=self.config.get('predictor_embed_dim', 128),
+                predictor_n_layer=self.config.get('predictor_n_layer', 4),
+                predictor_heads=self.config.get('predictor_heads', 4),
                 ema_momentum=self.config.get('ema_momentum', 0.995),
             )
             self._biojepa = model.BioJepa(model_config).to(self.device)
@@ -282,7 +293,7 @@ class EvalContext:
 
     @property
     def seq_banks(self):
-        '''Load sequence embedding banks (DNA, chemical) for v0.7 dual-path alignment.'''
+        '''Load sequence embedding banks (DNA, chemical) for v1.0 dual-path alignment.'''
         if self._seq_banks is None:
             seq_banks_dir = self.paths['pert_dir'] / 'seq_banks'
             self._seq_banks = {}
@@ -303,7 +314,7 @@ class EvalContext:
 
     @property
     def target_bank(self):
-        '''Load protein target embedding bank for v0.7 dual-path alignment.'''
+        '''Load protein target embedding bank for v1.0 dual-path alignment.'''
         if self._target_bank is None:
             target_path = self.paths['pert_dir'] / 'target_banks' / 'protein_targets.npy'
             if target_path.exists():
@@ -325,7 +336,7 @@ class EvalContext:
                         'modality': data['modality'],
                         'mode': data['mode']
                     }
-                print(f'Loaded {len(self._alignment_pairs["seq_idx"])} v0.7 alignment pairs')
+                print(f'Loaded {len(self._alignment_pairs["seq_idx"])} v1.0 alignment pairs')
             elif old_path.exists():
                 with np.load(old_path) as data:
                     n_pairs = len(data['input_idx'])
@@ -335,14 +346,14 @@ class EvalContext:
                         'modality': np.zeros(n_pairs, dtype=np.int64),
                         'mode': np.zeros(n_pairs, dtype=np.int64)
                     }
-                print(f'Loaded {n_pairs} v0.5 alignment pairs (converted to v0.7 format)')
+                print(f'Loaded {n_pairs} v0.5 alignment pairs (converted to v1.0 format)')
             else:
                 raise FileNotFoundError(f'No alignment pairs found at {new_path} or {old_path}')
         return self._alignment_pairs
 
     @property
     def alignment_inference(self):
-        '''Cached action vectors for alignment evals using v0.7 dual-path architecture.
+        '''Cached action vectors for alignment evals using v1.0 dual-path architecture.
 
         Uses encode_sequence_path() for sequences and encode_target_path() for targets.
         Supports DNA and chemical modalities for sequences, protein targets only.
@@ -2502,7 +2513,7 @@ def _dose_response(ctx):
 
 
 # =============================================================================
-# ALIGNMENT EVALS (v0.7 dual-path architecture)
+# ALIGNMENT EVALS (v1.0 dual-path architecture)
 # =============================================================================
 
 def _seq_to_target_retrieval(ctx):

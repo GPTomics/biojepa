@@ -1,12 +1,13 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-VERSION = 'v0_7'
+VERSION = 'v1_0'
 
 
 @dataclass
 class EncoderTrainingConfig:
     epochs: int = None #10
+    stop_after_epochs: int = None
     lr: float = 1e-3
     batch_size: int = 32
     warmup_pct: float = 0.05

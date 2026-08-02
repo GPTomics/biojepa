@@ -1,4 +1,4 @@
-**In progress version:**  v0.7
+**In progress version:**  v1.0
 
 ## V0.6 Technical Report [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/docs/biojepa_ac_technical_report_v0_6.pdf)
 
@@ -50,7 +50,7 @@ Beyond therapeutics, the model's learned representations enable biological disco
 | Mode conditioning | 9 modes (FiLM) | No | No | No |
 | Dose conditioning | Yes (multiplicative) | No | No | No |
 
-## v0.7 Changes
+## V1.0 Changes
 
 1. **Loss Component Logging:** TensorBoard logging in all four training stages. `vicreg_loss` and forward methods accept `return_components` to return loss breakdowns (NLL, std, cov). Default log directory: `checkpoint_dir/training_logs/{stage}/`.
     1. Benefit: Enables real-time monitoring of individual loss terms during training, making it possible to diagnose training dynamics (e.g. VICReg dominating NLL, or variance collapse) without post-hoc analysis.

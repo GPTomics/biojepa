@@ -10,10 +10,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 from torch.optim.lr_scheduler import LambdaLR
 
-from biojepa_v0_7 import BioJepa, BioJepaConfig
+from biojepa_v1_0 import BioJepa, BioJepaConfig
 from evals.evals import EvalContext, run_encoder_evals, summarize_encoder_evals
 from evals.linear_expression_decoder import BenchmarkDecoder, BenchmarkDecoderConfig
-from config_v0_7 import MAX_SEQ_DIM, VERSION
+from config_v1_0 import MAX_SEQ_DIM, VERSION
 
 
 def reset_seed(seed=1337):
@@ -152,6 +152,15 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
         max_steps = cfg.n_steps
     else:
         raise ValueError('Either epochs or n_steps must be specified')
+
+    run_end_step = max_steps
+    if cfg.stop_after_epochs is not None:
+        if cfg.epochs is None:
+            raise ValueError('stop_after_epochs requires epochs')
+        if not 1 <= cfg.stop_after_epochs <= cfg.epochs:
+            raise ValueError('stop_after_epochs must be between 1 and epochs')
+        run_end_step = cfg.stop_after_epochs * steps_per_epoch
+
     print(f'Encoder training: {train_loader.total_samples} samples, {steps_per_epoch} steps/epoch, {max_steps} total steps')
 
     if checkpoint_path is not None:
@@ -207,8 +216,8 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
     total_epoch_loss = 0
     model.train()
 
-    for step in range(start_step, max_steps):
-        last_step = (step == max_steps - 1)
+    for step in range(start_step, run_end_step):
+        last_step = (step == run_end_step - 1)
 
         if cfg.context_coeff > 0 and step >= context_ramp_start:
             progress = min(1.0, (step - context_ramp_start) / max(1, context_ramp_end - context_ramp_start))
@@ -216,23 +225,24 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
         else:
             current_context_coeff = 0.0
 
-        if step % 500 == 0 or last_step:
-            model.eval()
-            with torch.no_grad():
-                val_loss_accum = 0.0
-                val_loss_steps = 25
-                for _ in range(val_loss_steps):
-                    b = val_loader.next_batch()
-                    with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
-                        val_loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
-                    val_loss_accum += val_loss.item()
-                avg_val_loss = val_loss_accum / val_loss_steps
-                print(f'Step {step} | val loss: {avg_val_loss:.4f}')
-                if writer:
-                    writer.add_scalar('loss/val', avg_val_loss, step)
-            model.train()
+        if step % 5000 == 0 or last_step:
+            with torch.random.fork_rng():
+                model.eval()
+                with torch.no_grad():
+                    val_loss_accum = 0.0
+                    val_loss_steps = 250
+                    for _ in range(val_loss_steps):
+                        b = val_loader.next_batch()
+                        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
+                            val_loss = model.forward_encoder(b.x, b.total, gene_mask=b.gene_mask, context_coeff=current_context_coeff)
+                        val_loss_accum += val_loss.item()
+                    avg_val_loss = val_loss_accum / val_loss_steps
+                    print(f'Step {step} | val loss: {avg_val_loss:.4f}')
+                    if writer:
+                        writer.add_scalar('loss/val', avg_val_loss, step)
+                model.train()
 
-        if step > 0 and (step % 10000 == 0 or (step + 1) % steps_per_epoch == 0) and not last_step:
+        if step > 0 and (step + 1) % steps_per_epoch == 0 and not last_step:
             epoch = (step + 1) // steps_per_epoch
             torch.save({
                 'model': model.state_dict(),
@@ -274,7 +284,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
             for k, v in components.items():
                 writer.add_scalar(f'loss/{k}', v.item(), step)
 
-        if step % 100 == 0:
+        if step % 1000 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e} | Phase: {current_phase}')
 
         if step > 0 and (step + 1) % steps_per_epoch == 0:
@@ -328,6 +338,7 @@ def run_encoder_training(model, train_loader, val_loader, cfg, device, data_cfg,
 
 
 def run_composer_training(model, train_loader, val_loader, seq_banks, target_bank, cfg, device, checkpoint_dir, use_amp=False, use_fused_optimizer=False, log_dir='default'):
+    reset_seed()
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -368,7 +379,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
                 model.eval()
                 with torch.no_grad():
                     val_loss_accum = 0.0
-                    val_loss_steps = 50
+                    val_loss_steps = 500
                     for _ in range(val_loss_steps):
                         b = val_loader.next_batch()
                         B = b.seq_idx.shape[0]
@@ -401,6 +412,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
             loss = model.forward_composer(seq_emb, target_emb, modality_ids, mode_ids, pert_mask, temperature=cfg.temperature)
         loss.backward()
+        grad_norm = nn.utils.clip_grad_norm_(model.composer.parameters(), max_norm=float('inf'))
         optimizer.step()
         scheduler.step()
 
@@ -411,6 +423,7 @@ def run_composer_training(model, train_loader, val_loader, seq_banks, target_ban
         if writer:
             writer.add_scalar('loss/train', loss.item(), step)
             writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
+            writer.add_scalar('grad_norm', grad_norm.item(), step)
 
         if step % 2500 == 0:
             print(f'Step {step} | Loss: {loss.item():.5f} | LR: {scheduler.get_last_lr()[0]:.2e}')
@@ -515,7 +528,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
             model.eval()
             with torch.no_grad():
                 val_loss_accum = 0.0
-                val_loss_steps = 25
+                val_loss_steps = 250
                 for _ in range(val_loss_steps):
                     b = val_loader.next_batch()
 
@@ -536,7 +549,7 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
                     writer.add_scalar('loss/val', avg_val_loss, step)
             model.train()
 
-        if step > 0 and (step % 10000 == 0 or (step + 1) % steps_per_epoch == 0) and not last_step:
+        if step > 0 and (step + 1) % steps_per_epoch == 0 and not last_step:
             epoch = (step + 1) // steps_per_epoch
             torch.save({
                 'model': model.state_dict(),
@@ -584,6 +597,8 @@ def run_ac_training(model, train_loader, val_loader, seq_banks, target_bank, cfg
         if step > 0 and (step + 1) % steps_per_epoch == 0:
             epoch = (step + 1) // steps_per_epoch
             avg_loss = total_epoch_loss / steps_per_epoch
+            if writer:
+                writer.add_scalar('loss/train_epoch_avg', avg_loss, epoch)
             print(f'=== Epoch {epoch} Done. Avg Loss: {avg_loss:.5f} | Mask: {current_mask_ratio:.3f} | Beta: {current_beta:.3f} ===')
             total_epoch_loss = 0
 
@@ -629,6 +644,7 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
 
     loss_fn = nn.MSELoss()
     loss_history = []
+    total_epoch_loss = 0.0
 
     model.eval()
     for param in model.parameters():
@@ -688,14 +704,17 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
             real_delta = b.case - b.control
             loss = loss_fn(pred_delta[b.gene_mask], real_delta[b.gene_mask])
         loss.backward()
+        grad_norm = nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=float('inf'))
         optimizer.step()
         scheduler.step()
 
         loss_history.append(loss.item())
+        total_epoch_loss += loss.item()
 
         if writer:
             writer.add_scalar('loss/train', loss.item(), step)
             writer.add_scalar('lr', scheduler.get_last_lr()[0], step)
+            writer.add_scalar('grad_norm', grad_norm.item(), step)
 
         if step % 1000 == 0:
             print(f'Decoder Step {step} | Loss: {loss.item():.5f}')
@@ -703,6 +722,11 @@ def train_linear_decoder(model, train_loader, val_loader, seq_banks, target_bank
         at_epoch_boundary = (step + 1) % steps_per_epoch == 0
         if at_epoch_boundary:
             epoch = (step + 1) // steps_per_epoch
+            avg_loss = total_epoch_loss / steps_per_epoch
+            if writer:
+                writer.add_scalar('loss/train_epoch_avg', avg_loss, epoch)
+            print(f'=== Decoder Epoch {epoch} Done. Avg Loss: {avg_loss:.5f} ===')
+            total_epoch_loss = 0.0
             torch.save({
                 'model': decoder.state_dict(),
                 'optimizer': optimizer.state_dict(),
