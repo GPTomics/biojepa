@@ -4,11 +4,11 @@
 
 # BioJEPA-AC
 
-Our goal is to build a "world model" for cells as inspired by [V JEPA 2-AC](https://github.com/facebookresearch/vjepa2). This means that a successful model learns the causal physics of cell states. Because there are billions of potential drug and gene combinations, it is impossible and too expensive for scientists to test them all in a physical lab to see what works. A successful model would act like a digital simulator that predicts the results of these experiments instantly, allowing prediction of how cell types would react to different perturbations (e.g. therapeutics, gene knockout).
+BioJEPA-AC is a self-supervised cell-state model for perturbation-response prediction. It learns cell-state representations and treats genetic and chemical perturbations as actions that condition prediction in the latent space. This work is a step toward the longer-term goal of building a "world model" for cells: a model that learns the underlying structure of cell states and predicts how cells respond to perturbations such as therapeutics and gene knockouts.
 
 ## Background
 
-Inspired by [V JEPA 2-AC](https://github.com/facebookresearch/vjepa2), we treat perturbation response as an action-conditioned latent prediction problem. V-JEPA learns to predict future video frames given abstract "actions" inferred from data. We apply the same principle to cells: the perturbation is the action, and the model learns to predict the resulting gene expression state in a compressed latent space that captures pathway and regulatory network relationships.
+Inspired by [V-JEPA 2-AC](https://github.com/facebookresearch/vjepa2), we treat perturbation response as an action-conditioned latent prediction problem. V-JEPA learns to predict latent representations of future video from visual context, while V-JEPA 2-AC conditions its predictions on actions. We apply the same principle to cells: the perturbation is the action, and the model learns to predict the resulting cell-state representation in a compressed latent space that captures pathway and regulatory network relationships.
 
 ### Target Corporate Uses
 
