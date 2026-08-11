@@ -32,6 +32,8 @@ def _parse_dataset_name(shard_path, split):
 
 
 class _BaseShardLoader:
+    sample_count_key = None
+
     def __init__(self, batch_size, split, data_dir, device, total_samples=None, min_dataset_fraction=0.2, seed=None):
         self.batch_size = batch_size
         self.split = split
@@ -59,7 +61,18 @@ class _BaseShardLoader:
         if total_samples is not None:
             self.total_samples = total_samples
         else:
-            self.total_samples = self.total_samples_in_shard * len(self.shards)
+            self.total_samples = self._calculate_total_samples()
+
+    def _count_shard_samples(self, shard_path):
+        with np.load(shard_path) as data:
+            return data[self.sample_count_key].shape[0]
+
+    def _calculate_total_samples(self):
+        counts = {
+            shard: self._count_shard_samples(shard)
+            for shard in dict.fromkeys(self.shards)
+        }
+        return sum(counts[shard] for shard in self.shards)
 
     def _balance_shards(self):
         if self.split != 'train':
@@ -165,6 +178,8 @@ class _BaseShardLoader:
 
 
 class EncoderLoader(_BaseShardLoader):
+    sample_count_key = 'total'
+
     def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
         super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
 
@@ -187,6 +202,8 @@ PretrainLoader = EncoderLoader
 
 
 class ComposerLoader(_BaseShardLoader):
+    sample_count_key = 'modality'
+
     def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None, chemical_fraction=0.0):
         self.chemical_fraction = chemical_fraction
         super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
@@ -247,6 +264,8 @@ AlignmentLoader = ComposerLoader
 
 
 class TrainingLoader(_BaseShardLoader):
+    sample_count_key = 'control_total'
+
     def __init__(self, batch_size, split, data_dir, device, total_samples=None, seed=None):
         self._dataset_offsets = None
         super().__init__(batch_size, split, data_dir, device, total_samples, seed=seed)
