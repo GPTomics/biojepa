@@ -1,6 +1,4 @@
-**In progress version:**  v1.0
-
-## V0.6 Technical Report [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/docs/biojepa_ac_technical_report_v0_6.pdf)
+## V1.0 Technical Report [AVAILABLE](https://github.com/GPTomics/biojepa/blob/main/docs/biojepa_ac_technical_report_v1_0.pdf)
 
 # BioJEPA-AC
 
